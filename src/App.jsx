@@ -33,7 +33,7 @@ const ADMIN_DEFAULT_PASSWORD = "PixelCrush2026!";
 const EMAILJS_SERVICE_ID = "service_4rhqphc";
 const EMAILJS_PUBLIC_KEY = "aD0S2VJxLFAG8sF_c";
 const EMAILJS_TEMPLATE_ID = "template_t4nsltw"; // password-reset link template
-const EMAILJS_ORDER_TEMPLATE_ID = "template_pffdg6h"; // "new order" notification template — fill in once you create it
+const EMAILJS_ORDER_TEMPLATE_ID = "template_pf4dg6h"; // "new order" notification template
 // Where new-order alerts get emailed. Separate from the admin dashboard
 // login email on purpose — e.g. a shared studio inbox.
 const ADMIN_NOTIFY_EMAIL = "pixelcrushgraphics@gmail.com";

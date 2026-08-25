@@ -81,12 +81,13 @@ it for free — including your custom domain and HTTPS.
   (`.github/workflows/deploy.yml`) that builds and deploys automatically
   every time you push changes from GitHub Desktop
 
-### 4. Connect your domain
-- Still in Settings → Pages, scroll to **Custom domain**, type
-  `pixelcrush.online` (or whatever domain you bought), and save
-- This repo already includes a `public/CNAME` file with that domain so
-  the setting doesn't get reset — if you end up with a different domain,
-  edit that file to match before publishing
+### 4. Connect your domain (only once you actually own one)
+- Don't do this until you've bought a domain — adding a `CNAME` file or
+  setting this before then breaks your `github.io` link.
+- When you're ready: create a file at `public/CNAME` containing just your
+  domain name (e.g. `pixelcrush.online`, no `http://`, no trailing slash)
+- Still in Settings → Pages, scroll to **Custom domain**, type the same
+  domain, and save
 - At wherever you bought the domain, go to DNS settings and add the
   records GitHub shows you (usually 4 "A" records pointing to GitHub's
   servers, or a CNAME record if using a `www` subdomain — GitHub's Pages
