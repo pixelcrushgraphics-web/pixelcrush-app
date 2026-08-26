@@ -4,7 +4,8 @@ import {
   Star, ChevronRight, ChevronLeft, Package, CreditCard, Users,
   LayoutDashboard, Trash2, Pencil, Eye, EyeOff, ArrowLeft, ArrowRight,
   Phone, Mail, MapPin, Instagram, Facebook, PlusCircle, XCircle,
-  CheckCircle2, Clock, AlertCircle, Filter, ChevronDown, Volume2, VolumeX, Settings, KeyRound
+  CheckCircle2, Clock, AlertCircle, Filter, ChevronDown, Volume2, VolumeX, Settings, KeyRound,
+  Upload, FileText, Image as ImageIcon
 } from "lucide-react";
 
 /* ============================================================
@@ -70,6 +71,94 @@ const fmtDate = (d) => new Date(d).toLocaleString("en-LK", { dateStyle: "medium"
 const obfuscate = (s) => { try { return btoa(unescape(encodeURIComponent(s))); } catch (e) { return s; } };
 const deobfuscate = (s) => { try { return decodeURIComponent(escape(atob(s))); } catch (e) { return ""; } };
 const generateResetToken = () => Array.from({ length: 32 }, () => Math.floor(Math.random() * 36).toString(36)).join("");
+
+const MAX_UPLOAD_MB = 8;
+
+// Reads a File as a base64 data URL.
+function readFileAsDataURL(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+// Downscales/re-encodes an image file to keep it small enough for browser
+// storage (localStorage has a small total quota). PDFs are left untouched
+// aside from the size check, since they can't be re-compressed client-side.
+async function compressImageFile(file, maxDim = 1600, quality = 0.72) {
+  const dataUrl = await readFileAsDataURL(file);
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      let { width, height } = img;
+      if (width > maxDim || height > maxDim) {
+        const scale = maxDim / Math.max(width, height);
+        width = Math.round(width * scale);
+        height = Math.round(height * scale);
+      }
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(img, 0, 0, width, height);
+      resolve(canvas.toDataURL("image/jpeg", quality));
+    };
+    img.onerror = reject;
+    img.src = dataUrl;
+  });
+}
+
+/* ---------------- Product image storage (IndexedDB) ----------------
+   Product photos are stored in IndexedDB rather than localStorage —
+   localStorage caps out around 5MB total across the whole site, which
+   isn't enough room for a real product catalog with multiple photos
+   per product. IndexedDB gives each browser far more headroom. Each
+   product just stores an array of image "keys" (strings); the actual
+   image data lives in this separate store, loaded on demand. */
+const IMG_DB_NAME = "pixelcrush_images";
+const IMG_STORE = "images";
+
+function openImageDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(IMG_DB_NAME, 1);
+    req.onupgradeneeded = () => {
+      if (!req.result.objectStoreNames.contains(IMG_STORE)) {
+        req.result.createObjectStore(IMG_STORE);
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+async function idbSetImage(key, dataUrl) {
+  const db = await openImageDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(IMG_STORE, "readwrite");
+    tx.objectStore(IMG_STORE).put(dataUrl, key);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+async function idbGetImage(key) {
+  const db = await openImageDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(IMG_STORE, "readonly");
+    const req = tx.objectStore(IMG_STORE).get(key);
+    req.onsuccess = () => resolve(req.result || null);
+    req.onerror = () => reject(req.error);
+  });
+}
+async function idbDeleteImage(key) {
+  const db = await openImageDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(IMG_STORE, "readwrite");
+    tx.objectStore(IMG_STORE).delete(key);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
 
 /* ---------------- Fonts + global chrome ---------------- */
 function GlobalStyle() {
@@ -347,6 +436,87 @@ function ProductGlyph({ name, active = true, className = "" }) {
       <span className="pc-display relative font-black" style={{ color: GREEN, fontSize: "2.4rem", textShadow: `0 0 18px rgba(117,252,8,0.6)` }}>
         {initials}
       </span>
+    </div>
+  );
+}
+
+// Single cover-image preview (product cards, admin list rows). Loads the
+// first image key from IndexedDB; falls back to the letter-glyph tile if
+// the product has no photos uploaded yet.
+function ProductThumb({ keys, fallbackName, active = true, className = "" }) {
+  const firstKey = keys && keys.length > 0 ? keys[0] : null;
+  const [src, setSrc] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!firstKey) { setSrc(null); return; }
+    idbGetImage(firstKey).then((data) => { if (!cancelled) setSrc(data); }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [firstKey]);
+
+  if (!firstKey) return <ProductGlyph name={fallbackName} active={active} className={className} />;
+  if (!src) return <div className={`${className} pc-mono text-[10px] flex items-center justify-center opacity-40`} style={{ background: BLACK, border: `1px solid ${GREEN}` }}>Loading…</div>;
+  return (
+    <img
+      src={src}
+      alt={fallbackName}
+      className={`${className} object-cover`}
+      style={{ opacity: active ? 1 : 0.35, border: `1px solid ${GREEN}` }}
+    />
+  );
+}
+
+// Full gallery for the product detail page — big preview + clickable
+// thumbnail strip when there's more than one photo. Falls back to the
+// letter-glyph tile if no photos have been uploaded for this product.
+function ProductGallery({ product }) {
+  const keys = product.imageKeys || [];
+  const [selected, setSelected] = useState(0);
+  const [srcs, setSrcs] = useState({});
+
+  useEffect(() => {
+    let cancelled = false;
+    setSelected(0);
+    (async () => {
+      const entries = {};
+      for (const k of keys) {
+        entries[k] = await idbGetImage(k).catch(() => null);
+        if (cancelled) return;
+      }
+      if (!cancelled) setSrcs(entries);
+    })();
+    return () => { cancelled = true; };
+  }, [keys.join(",")]);
+
+  if (keys.length === 0) {
+    return <ProductGlyph name={product.name} className="w-full aspect-square" />;
+  }
+
+  const mainSrc = srcs[keys[selected]];
+
+  return (
+    <div>
+      <div className="w-full aspect-square overflow-hidden flex items-center justify-center" style={{ background: BLACK, border: `1px solid ${GREEN}` }}>
+        {mainSrc ? (
+          <img src={mainSrc} alt={product.name} className="w-full h-full object-cover" />
+        ) : (
+          <span className="pc-mono text-xs opacity-40">Loading…</span>
+        )}
+      </div>
+      {keys.length > 1 && (
+        <div className="flex gap-2 mt-3 overflow-x-auto pc-scrollbar">
+          {keys.map((k, i) => (
+            <button
+              key={k}
+              onClick={() => setSelected(i)}
+              className="shrink-0 pc-btn"
+              style={{ width: 64, height: 64, border: `2px solid ${i === selected ? GREEN : WHITE}`, opacity: i === selected ? 1 : 0.6 }}
+            >
+              {srcs[k] && <img src={srcs[k]} alt="" className="w-full h-full object-cover" />}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -674,7 +844,7 @@ function Landing({ products, reviews, onViewProduct, onNav, scrollTo }) {
                   const cheapest = Math.min(...p.tiers.map((t) => t.price));
                   return (
                     <div key={p.id} className="pc-card group cursor-pointer" style={{ background: BLACK, border: `2px solid ${GREEN}` }} onClick={() => onViewProduct(p.id)}>
-                      <ProductGlyph name={p.name} className="w-full h-44" />
+                      <ProductThumb keys={p.imageKeys} fallbackName={p.name} className="w-full h-44" />
                       <div className="p-5">
                         <div className="flex items-center justify-between mb-2">
                           <Badge tone="outline">{p.category}</Badge>
@@ -793,7 +963,7 @@ function ProductPage({ product, onBack, onStartOrder }) {
 
       <div className="grid lg:grid-cols-2 gap-12">
         <div>
-          <ProductGlyph name={product.name} className="w-full aspect-square" />
+          <ProductGallery product={product} />
           <div className="mt-6 flex gap-2">
             <Badge tone="outline">{product.category}</Badge>
             {product.negotiable && <Badge tone="green">Negotiable pricing</Badge>}
@@ -967,7 +1137,39 @@ function Checkout({ draft, bank, user, onBack, onPlaceOrder }) {
   const [agree, setAgree] = useState(false);
   const [paid, setPaid] = useState(false);
   const [refNote, setRefNote] = useState("");
+  const [slipData, setSlipData] = useState(null); // { dataUrl, name, type }
+  const [slipProcessing, setSlipProcessing] = useState(false);
+  const [slipError, setSlipError] = useState("");
   const [error, setError] = useState("");
+
+  const handleSlipSelect = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // allow re-selecting the same file later
+    if (!file) return;
+    setSlipError("");
+
+    const isImage = file.type.startsWith("image/");
+    const isPdf = file.type === "application/pdf";
+    if (!isImage && !isPdf) {
+      return setSlipError("Please upload an image (JPG/PNG) or a PDF file.");
+    }
+    if (file.size > MAX_UPLOAD_MB * 1024 * 1024) {
+      return setSlipError(`That file is too large — please keep it under ${MAX_UPLOAD_MB}MB.`);
+    }
+
+    setSlipProcessing(true);
+    try {
+      const dataUrl = isImage ? await compressImageFile(file) : await readFileAsDataURL(file);
+      setSlipData({ dataUrl, name: file.name, type: isImage ? "image" : "pdf" });
+      setPaid(true); // uploading a slip implies payment was made
+    } catch (err) {
+      setSlipError("Couldn't read that file — please try a different one.");
+    } finally {
+      setSlipProcessing(false);
+    }
+  };
+
+  const removeSlip = () => setSlipData(null);
 
   const submit = () => {
     if (!name.trim() || !phone.trim() || !whatsapp.trim() || !email.trim()) {
@@ -983,6 +1185,9 @@ function Checkout({ draft, bank, user, onBack, onPlaceOrder }) {
       address,
       paymentStatus: paid ? "Payment Proof Submitted" : "Payment Pending",
       paymentRef: refNote,
+      paymentProofData: slipData?.dataUrl || null,
+      paymentProofName: slipData?.name || null,
+      paymentProofType: slipData?.type || null,
     });
   };
 
@@ -1022,12 +1227,47 @@ function Checkout({ draft, bank, user, onBack, onPlaceOrder }) {
               I've completed the bank transfer for this order.
             </label>
             {paid && (
-              <TextInput
-                className="mt-3"
-                placeholder="Optional: payment reference / slip number"
-                value={refNote}
-                onChange={(e) => setRefNote(e.target.value)}
-              />
+              <div className="mt-3 space-y-3">
+                <TextInput
+                  placeholder="Optional: payment reference / slip number"
+                  value={refNote}
+                  onChange={(e) => setRefNote(e.target.value)}
+                />
+
+                <div>
+                  <FieldLabel required={false}>Upload Payment Slip (image or PDF)</FieldLabel>
+
+                  {!slipData ? (
+                    <label
+                      className="pc-btn flex flex-col items-center justify-center gap-2 py-8 cursor-pointer text-center"
+                      style={{ border: `2px dashed ${GREEN}`, background: BLACK }}
+                    >
+                      <input type="file" accept="image/*,application/pdf" onChange={handleSlipSelect} className="hidden" />
+                      <Upload size={22} style={{ color: GREEN }} />
+                      <span className="text-sm font-bold">{slipProcessing ? "Processing…" : "Click to upload"}</span>
+                      <span className="text-xs opacity-60">JPG, PNG, or PDF — up to {MAX_UPLOAD_MB}MB</span>
+                    </label>
+                  ) : (
+                    <div className="p-4 flex items-center gap-4" style={{ border: `2px solid ${GREEN}`, background: BLACK }}>
+                      {slipData.type === "image" ? (
+                        <img src={slipData.dataUrl} alt="Payment slip preview" className="w-16 h-16 object-cover shrink-0" style={{ border: `1px solid ${WHITE}` }} />
+                      ) : (
+                        <div className="w-16 h-16 flex items-center justify-center shrink-0" style={{ border: `1px solid ${WHITE}` }}>
+                          <FileText size={26} style={{ color: GREEN }} />
+                        </div>
+                      )}
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm font-bold truncate">{slipData.name}</div>
+                        <div className="text-xs opacity-60">{slipData.type === "image" ? "Image" : "PDF"} attached</div>
+                      </div>
+                      <button onClick={removeSlip} className="pc-btn p-2 shrink-0" style={{ border: `2px solid ${WHITE}`, color: WHITE }}>
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                  )}
+                  {slipError && <div className="mt-2 text-xs font-bold px-3 py-2.5" style={{ background: BLACK, color: GREEN, border: `1px solid ${GREEN}` }}>{slipError}</div>}
+                </div>
+              </div>
             )}
           </div>
 
@@ -1085,6 +1325,9 @@ function Confirmation({ order, bank, onNav }) {
         <div className="flex justify-between text-sm"><span className="opacity-60">Quantity</span><span className="font-bold">{order.qty}</span></div>
         <div className="flex justify-between text-sm"><span className="opacity-60">Total</span><span className="font-bold">{order.negotiable ? "To be confirmed" : fmtLKR(order.total)}</span></div>
         <div className="flex justify-between text-sm"><span className="opacity-60">Payment Status</span><Badge tone="green">{order.paymentStatus}</Badge></div>
+        {order.paymentProofData && (
+          <div className="flex justify-between text-sm"><span className="opacity-60">Payment Slip</span><span className="font-bold flex items-center gap-1.5"><FileText size={14} /> Attached</span></div>
+        )}
         <div style={{ borderTop: `1px dashed ${WHITE}` }} className="pt-3 text-sm">
           <div className="opacity-60 mb-1">Bank Transfer Instructions</div>
           <div className="font-bold">{bank.bankName} — {bank.accountNumber}</div>
@@ -1603,9 +1846,102 @@ function AdminDashboard({
 function emptyProduct() {
   return {
     id: null, name: "", category: CATEGORIES[1], description: "", active: true, negotiable: false,
-    minQty: 1, tiers: [{ qty: 1, price: 0 }], fields: [],
+    minQty: 1, tiers: [{ qty: 1, price: 0 }], fields: [], imageKeys: [],
   };
 }
+// Multi-image upload manager for the admin product editor. Handles
+// compressing each file, saving it to IndexedDB, and keeping the
+// product's imageKeys array in sync. First key = cover photo.
+function AdminImageManager({ keys, onChange }) {
+  const [srcs, setSrcs] = useState({});
+  const [uploading, setUploading] = useState(false);
+  const [err, setErr] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const entries = {};
+      for (const k of keys) {
+        entries[k] = await idbGetImage(k).catch(() => null);
+        if (cancelled) return;
+      }
+      if (!cancelled) setSrcs(entries);
+    })();
+    return () => { cancelled = true; };
+  }, [keys.join(",")]);
+
+  const handleFiles = async (e) => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = "";
+    if (files.length === 0) return;
+    setErr("");
+    setUploading(true);
+    try {
+      const newKeys = [];
+      for (const file of files) {
+        if (!file.type.startsWith("image/")) continue;
+        if (file.size > MAX_UPLOAD_MB * 1024 * 1024) {
+          setErr(`Skipped "${file.name}" — over ${MAX_UPLOAD_MB}MB.`);
+          continue;
+        }
+        const dataUrl = await compressImageFile(file, 1400, 0.8);
+        const key = uid("img");
+        await idbSetImage(key, dataUrl);
+        newKeys.push(key);
+      }
+      if (newKeys.length > 0) onChange([...keys, ...newKeys]);
+    } catch (e) {
+      setErr("Something went wrong uploading one of those images.");
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const removeImage = async (key) => {
+    idbDeleteImage(key).catch(() => {});
+    onChange(keys.filter((k) => k !== key));
+  };
+  const setCover = (key) => onChange([key, ...keys.filter((k) => k !== key)]);
+
+  return (
+    <div>
+      <FieldLabel required={false}>Product Images</FieldLabel>
+      {keys.length > 0 && (
+        <div className="grid grid-cols-4 sm:grid-cols-5 gap-2 mb-3">
+          {keys.map((k, i) => (
+            <div key={k} className="relative" style={{ border: `2px solid ${i === 0 ? GREEN : WHITE}` }}>
+              {srcs[k] ? (
+                <img src={srcs[k]} alt="" className="w-full aspect-square object-cover" />
+              ) : (
+                <div className="w-full aspect-square flex items-center justify-center pc-mono text-[9px] opacity-40">…</div>
+              )}
+              {i === 0 && (
+                <span className="absolute top-1 left-1 pc-mono text-[9px] font-bold px-1" style={{ background: GREEN, color: BLACK }}>Cover</span>
+              )}
+              <div className="absolute bottom-1 right-1 flex gap-1">
+                {i !== 0 && (
+                  <button onClick={() => setCover(k)} className="p-1" style={{ background: BLACK, border: `1px solid ${WHITE}` }} title="Set as cover photo">
+                    <Star size={10} color={WHITE} />
+                  </button>
+                )}
+                <button onClick={() => removeImage(k)} className="p-1" style={{ background: BLACK, border: `1px solid ${WHITE}` }} title="Remove">
+                  <Trash2 size={10} color={WHITE} />
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      <label className="pc-btn flex items-center justify-center gap-2 py-4 cursor-pointer text-sm font-bold" style={{ border: `2px dashed ${GREEN}`, background: BLACK }}>
+        <input type="file" accept="image/*" multiple onChange={handleFiles} className="hidden" />
+        <Upload size={16} style={{ color: GREEN }} /> {uploading ? "Uploading…" : "Add Images (select multiple at once)"}
+      </label>
+      {err && <div className="mt-2 text-xs font-bold px-3 py-2.5" style={{ background: BLACK, color: GREEN, border: `1px solid ${GREEN}` }}>{err}</div>}
+      <p className="mt-2 text-xs opacity-50">First image is the cover photo shown on the shop grid — click the star on another to make it the cover instead.</p>
+    </div>
+  );
+}
+
 function ProductsAdmin({ products, editingProduct, setEditingProduct, onSaveProduct, onDeleteProduct, onToggleProduct }) {
   const isNew = editingProduct && !editingProduct.id;
 
@@ -1630,6 +1966,8 @@ function ProductsAdmin({ products, editingProduct, setEditingProduct, onSaveProd
             </div>
           </div>
           <div><FieldLabel required={false}>Description</FieldLabel><TextArea rows={3} value={p.description} onChange={(e) => set({ description: e.target.value })} /></div>
+
+          <AdminImageManager keys={p.imageKeys || []} onChange={(imageKeys) => set({ imageKeys })} />
 
           <div className="grid sm:grid-cols-2 gap-4">
             <div><FieldLabel required>Minimum Quantity</FieldLabel><TextInput type="number" min={1} value={p.minQty} onChange={(e) => set({ minQty: Number(e.target.value) })} /></div>
@@ -1705,7 +2043,7 @@ function ProductsAdmin({ products, editingProduct, setEditingProduct, onSaveProd
         {products.map((p) => (
           <div key={p.id} className="p-4 flex flex-wrap items-center justify-between gap-4" style={{ background: BLACK, border: `2px solid ${GREEN}`, opacity: p.active ? 1 : 0.5 }}>
             <div className="flex items-center gap-4">
-              <ProductGlyph name={p.name} className="w-14 h-14 shrink-0" active={p.active} />
+              <ProductThumb keys={p.imageKeys} fallbackName={p.name} className="w-14 h-14 shrink-0" active={p.active} />
               <div>
                 <div className="font-bold flex items-center gap-2">{p.name} {!p.active && <Badge tone="outline">Inactive</Badge>}</div>
                 <div className="text-xs opacity-60 pc-mono">{p.category} · Min {p.minQty} · {p.tiers.length} tiers</div>
@@ -1799,6 +2137,31 @@ function OrdersAdmin({ orders, filters, setFilters, openOrder, setOpenOrderId, o
           <div className="p-5 mb-6" style={{ background: BLACK, border: `2px solid ${GREEN}` }}>
             <div className="pc-mono text-xs font-bold uppercase tracking-wider mb-2">Payment Reference</div>
             <p className="text-sm opacity-80">{o.paymentRef}</p>
+          </div>
+        )}
+
+        {o.paymentProofData && (
+          <div className="p-5 mb-6" style={{ background: BLACK, border: `2px solid ${GREEN}` }}>
+            <div className="pc-mono text-xs font-bold uppercase tracking-wider mb-3">Payment Slip</div>
+            {o.paymentProofType === "image" ? (
+              <a href={o.paymentProofData} target="_blank" rel="noreferrer">
+                <img
+                  src={o.paymentProofData}
+                  alt="Payment slip"
+                  className="max-w-full w-64 cursor-zoom-in"
+                  style={{ border: `1px solid ${WHITE}` }}
+                />
+              </a>
+            ) : (
+              <a
+                href={o.paymentProofData}
+                download={o.paymentProofName || "payment-slip.pdf"}
+                className="pc-btn inline-flex items-center gap-2 px-4 py-2.5 text-sm font-bold"
+                style={{ border: `2px solid ${GREEN}`, color: GREEN }}
+              >
+                <FileText size={16} /> {o.paymentProofName || "View PDF slip"}
+              </a>
+            )}
           </div>
         )}
 
@@ -2202,7 +2565,11 @@ export default function App() {
     const next = exists ? products.map((x) => (x.id === p.id ? p : x)) : [...products, p];
     saveProducts(next);
   };
-  const handleDeleteProduct = (id) => saveProducts(products.filter((p) => p.id !== id));
+  const handleDeleteProduct = (id) => {
+    const p = products.find((x) => x.id === id);
+    (p?.imageKeys || []).forEach((k) => idbDeleteImage(k).catch(() => {}));
+    saveProducts(products.filter((x) => x.id !== id));
+  };
   const handleToggleProduct = (id) => saveProducts(products.map((p) => (p.id === id ? { ...p, active: !p.active } : p)));
 
   const saveOrders = (next) => { setOrders(next); saveKey("pc_orders", next); };
@@ -2230,6 +2597,9 @@ export default function App() {
       address: contact.address,
       paymentStatus: contact.paymentStatus,
       paymentRef: contact.paymentRef,
+      paymentProofData: contact.paymentProofData || null,
+      paymentProofName: contact.paymentProofName || null,
+      paymentProofType: contact.paymentProofType || null,
       orderStatus: "New",
       internalNotes: "",
     };
