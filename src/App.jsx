@@ -2099,6 +2099,12 @@ function ProductsAdmin({ products, categories, onAddCategory, editingProduct, se
   const [newCategory, setNewCategory] = useState("");
   const [search, setSearch] = useState("");
 
+  const filteredProducts = React.useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return products;
+    return products.filter((p) => p.productCode?.toLowerCase().includes(q) || p.name.toLowerCase().includes(q));
+  }, [products, search]);
+
   if (editingProduct) {
     const p = editingProduct;
     const set = (patch) => setEditingProduct({ ...p, ...patch });
@@ -2201,12 +2207,6 @@ function ProductsAdmin({ products, categories, onAddCategory, editingProduct, se
       </div>
     );
   }
-
-  const filteredProducts = React.useMemo(() => {
-    const q = search.trim().toLowerCase();
-    if (!q) return products;
-    return products.filter((p) => p.productCode?.toLowerCase().includes(q) || p.name.toLowerCase().includes(q));
-  }, [products, search]);
 
   return (
     <div>
