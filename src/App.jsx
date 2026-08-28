@@ -444,6 +444,8 @@ const seedBank = () => ({
   accountNumber: "8001 2345 6789",
   branch: "Colombo 03",
   instructions: "Please use your Order ID as the payment reference and share the slip on WhatsApp for faster confirmation.",
+  instagramUrl: "",
+  facebookUrl: "",
 });
 
 const DEFAULT_CATEGORIES = ["Business Cards", "Marketing Materials", "Printing", "Digital Designs", "Invitations", "Brochures"];
@@ -841,10 +843,34 @@ function Footer({ onNav, bank }) {
         <div>
           <h4 className="pc-mono text-xs font-bold uppercase tracking-wider mb-4" style={{ color: GREEN }}>Payments</h4>
           <p className="text-sm opacity-80 leading-relaxed">Bank transfer only.<br />{bank.bankName}<br />{bank.branch}</p>
-          <div className="flex gap-3 mt-4">
-            <div className="p-2" style={{ border: `1px solid ${GREEN}` }}><Instagram size={16} /></div>
-            <div className="p-2" style={{ border: `1px solid ${GREEN}` }}><Facebook size={16} /></div>
-          </div>
+          {(bank.instagramUrl || bank.facebookUrl) && (
+            <div className="flex gap-3 mt-4">
+              {bank.instagramUrl && (
+                <a
+                  href={bank.instagramUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  aria-label="Instagram"
+                  className="pc-btn pc-ghost-btn p-2"
+                  style={{ border: `1px solid ${GREEN}`, color: WHITE }}
+                >
+                  <Instagram size={16} />
+                </a>
+              )}
+              {bank.facebookUrl && (
+                <a
+                  href={bank.facebookUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  aria-label="Facebook"
+                  className="pc-btn pc-ghost-btn p-2"
+                  style={{ border: `1px solid ${GREEN}`, color: WHITE }}
+                >
+                  <Facebook size={16} />
+                </a>
+              )}
+            </div>
+          )}
         </div>
       </div>
       <div className="text-center text-[11px] pc-mono opacity-50 pb-6">© {new Date().getFullYear()} PIXEL CRUSH — DESIGN & PRINT STUDIO</div>
@@ -1303,7 +1329,6 @@ function Checkout({ draft, bank, user, onBack, onPlaceOrder }) {
   const [email, setEmail] = useState(user?.email || "");
   const [address, setAddress] = useState("");
   const [agree, setAgree] = useState(false);
-  const [paid, setPaid] = useState(false);
   const [refNote, setRefNote] = useState("");
   const [slipData, setSlipData] = useState(null); // { dataUrl, name, type }
   const [slipProcessing, setSlipProcessing] = useState(false);
@@ -1329,7 +1354,6 @@ function Checkout({ draft, bank, user, onBack, onPlaceOrder }) {
     try {
       const dataUrl = isImage ? await compressImageFile(file) : await readFileAsDataURL(file);
       setSlipData({ dataUrl, name: file.name, type: isImage ? "image" : "pdf" });
-      setPaid(true); // uploading a slip implies payment was made
     } catch (err) {
       setSlipError("Couldn't read that file — please try a different one.");
     } finally {
@@ -1343,6 +1367,7 @@ function Checkout({ draft, bank, user, onBack, onPlaceOrder }) {
     if (!name.trim() || !phone.trim() || !whatsapp.trim() || !email.trim()) {
       return setError("Please fill in your name, phone, WhatsApp number and email.");
     }
+    if (!slipData) return setError("Please upload your payment slip (image or PDF) before placing the order — orders can't be submitted without proof of payment.");
     if (!agree) return setError("Please confirm the order details before placing your order.");
     setError("");
     onPlaceOrder({
@@ -1351,11 +1376,11 @@ function Checkout({ draft, bank, user, onBack, onPlaceOrder }) {
       whatsapp,
       email,
       address,
-      paymentStatus: paid ? "Payment Proof Submitted" : "Payment Pending",
+      paymentStatus: "Payment Proof Submitted",
       paymentRef: refNote,
-      paymentProofData: slipData?.dataUrl || null,
-      paymentProofName: slipData?.name || null,
-      paymentProofType: slipData?.type || null,
+      paymentProofData: slipData.dataUrl,
+      paymentProofName: slipData.name,
+      paymentProofType: slipData.type,
     });
   };
 
@@ -1390,53 +1415,49 @@ function Checkout({ draft, bank, user, onBack, onPlaceOrder }) {
               ))}
               <p className="text-xs opacity-70 pt-2 leading-relaxed">{bank.instructions}</p>
             </div>
-            <label className="mt-4 flex items-start gap-2.5 text-sm cursor-pointer">
-              <input type="checkbox" checked={paid} onChange={(e) => setPaid(e.target.checked)} className="mt-1" style={{ accentColor: GREEN }} />
-              I've completed the bank transfer for this order.
-            </label>
-            {paid && (
-              <div className="mt-3 space-y-3">
-                <TextInput
-                  placeholder="Optional: payment reference / slip number"
-                  value={refNote}
-                  onChange={(e) => setRefNote(e.target.value)}
-                />
 
-                <div>
-                  <FieldLabel required={false}>Upload Payment Slip (image or PDF)</FieldLabel>
+            <div className="mt-4 space-y-3">
+              <div>
+                <FieldLabel required>Upload Payment Slip (image or PDF)</FieldLabel>
+                <p className="text-xs opacity-60 mb-2 -mt-1">Required — your order can't be submitted without proof of payment.</p>
 
-                  {!slipData ? (
-                    <label
-                      className="pc-btn flex flex-col items-center justify-center gap-2 py-8 cursor-pointer text-center"
-                      style={{ border: `2px dashed ${GREEN}`, background: BLACK }}
-                    >
-                      <input type="file" accept="image/*,application/pdf" onChange={handleSlipSelect} className="hidden" />
-                      <Upload size={22} style={{ color: GREEN }} />
-                      <span className="text-sm font-bold">{slipProcessing ? "Processing…" : "Click to upload"}</span>
-                      <span className="text-xs opacity-60">JPG, PNG, or PDF — up to {MAX_UPLOAD_MB}MB</span>
-                    </label>
-                  ) : (
-                    <div className="p-4 flex items-center gap-4" style={{ border: `2px solid ${GREEN}`, background: BLACK }}>
-                      {slipData.type === "image" ? (
-                        <img src={slipData.dataUrl} alt="Payment slip preview" className="w-16 h-16 object-cover shrink-0" style={{ border: `1px solid ${WHITE}` }} />
-                      ) : (
-                        <div className="w-16 h-16 flex items-center justify-center shrink-0" style={{ border: `1px solid ${WHITE}` }}>
-                          <FileText size={26} style={{ color: GREEN }} />
-                        </div>
-                      )}
-                      <div className="flex-1 min-w-0">
-                        <div className="text-sm font-bold truncate">{slipData.name}</div>
-                        <div className="text-xs opacity-60">{slipData.type === "image" ? "Image" : "PDF"} attached</div>
+                {!slipData ? (
+                  <label
+                    className="pc-btn flex flex-col items-center justify-center gap-2 py-8 cursor-pointer text-center"
+                    style={{ border: `2px dashed ${GREEN}`, background: BLACK }}
+                  >
+                    <input type="file" accept="image/*,application/pdf" onChange={handleSlipSelect} className="hidden" />
+                    <Upload size={22} style={{ color: GREEN }} />
+                    <span className="text-sm font-bold">{slipProcessing ? "Processing…" : "Click to upload"}</span>
+                    <span className="text-xs opacity-60">JPG, PNG, or PDF — up to {MAX_UPLOAD_MB}MB</span>
+                  </label>
+                ) : (
+                  <div className="p-4 flex items-center gap-4" style={{ border: `2px solid ${GREEN}`, background: BLACK }}>
+                    {slipData.type === "image" ? (
+                      <img src={slipData.dataUrl} alt="Payment slip preview" className="w-16 h-16 object-cover shrink-0" style={{ border: `1px solid ${WHITE}` }} />
+                    ) : (
+                      <div className="w-16 h-16 flex items-center justify-center shrink-0" style={{ border: `1px solid ${WHITE}` }}>
+                        <FileText size={26} style={{ color: GREEN }} />
                       </div>
-                      <button onClick={removeSlip} className="pc-btn p-2 shrink-0" style={{ border: `2px solid ${WHITE}`, color: WHITE }}>
-                        <Trash2 size={14} />
-                      </button>
+                    )}
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-bold truncate">{slipData.name}</div>
+                      <div className="text-xs opacity-60">{slipData.type === "image" ? "Image" : "PDF"} attached</div>
                     </div>
-                  )}
-                  {slipError && <div className="mt-2 text-xs font-bold px-3 py-2.5" style={{ background: BLACK, color: GREEN, border: `1px solid ${GREEN}` }}>{slipError}</div>}
-                </div>
+                    <button onClick={removeSlip} className="pc-btn p-2 shrink-0" style={{ border: `2px solid ${WHITE}`, color: WHITE }}>
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                )}
+                {slipError && <div className="mt-2 text-xs font-bold px-3 py-2.5" style={{ background: BLACK, color: GREEN, border: `1px solid ${GREEN}` }}>{slipError}</div>}
               </div>
-            )}
+
+              <TextInput
+                placeholder="Optional: payment reference / slip number"
+                value={refNote}
+                onChange={(e) => setRefNote(e.target.value)}
+              />
+            </div>
           </div>
 
           <label className="flex items-start gap-2.5 text-sm cursor-pointer">
@@ -1847,7 +1868,7 @@ function AdminDashboard({
     { id: "orders", label: "Orders", icon: ShoppingBag },
     { id: "customers", label: "Customers", icon: Users },
     { id: "reviews", label: "Reviews", icon: Star },
-    { id: "bank", label: "Bank Details", icon: CreditCard },
+    { id: "bank", label: "Bank & Social", icon: CreditCard },
     { id: "notifications", label: "Notifications", icon: Bell, badge: notifications.filter((n) => !n.read).length },
     { id: "account", label: "Admin Account", icon: KeyRound },
   ];
@@ -2645,8 +2666,19 @@ function BankAdmin({ bank, onSaveBank }) {
       <div><FieldLabel required>Account Number</FieldLabel><TextInput value={form.accountNumber} onChange={(e) => setForm((f) => ({ ...f, accountNumber: e.target.value }))} /></div>
       <div><FieldLabel required>Branch</FieldLabel><TextInput value={form.branch} onChange={(e) => setForm((f) => ({ ...f, branch: e.target.value }))} /></div>
       <div><FieldLabel required={false}>Payment Instructions</FieldLabel><TextArea rows={3} value={form.instructions} onChange={(e) => setForm((f) => ({ ...f, instructions: e.target.value }))} /></div>
+
+      <div className="pt-2" style={{ borderTop: `1px solid rgba(255,255,255,0.15)` }}>
+        <FieldLabel required={false}>Instagram URL</FieldLabel>
+        <TextInput placeholder="https://instagram.com/yourstudio" value={form.instagramUrl || ""} onChange={(e) => setForm((f) => ({ ...f, instagramUrl: e.target.value.trim() }))} />
+      </div>
+      <div>
+        <FieldLabel required={false}>Facebook URL</FieldLabel>
+        <TextInput placeholder="https://facebook.com/yourstudio" value={form.facebookUrl || ""} onChange={(e) => setForm((f) => ({ ...f, facebookUrl: e.target.value.trim() }))} />
+      </div>
+      <p className="text-xs opacity-50">These links power the clickable social icons in the site footer. Leave a field blank to hide that icon.</p>
+
       <GreenButton onClick={() => { onSaveBank(form); setSaved(true); setTimeout(() => setSaved(false), 2000); }} className="!px-6">
-        {saved ? <><Check size={15} /> Saved</> : "Save Bank Details"}
+        {saved ? <><Check size={15} /> Saved</> : "Save Details"}
       </GreenButton>
     </div>
   );
