@@ -917,29 +917,28 @@ function Landing({ products, reviews, categories, onViewProduct, onNav, scrollTo
           className="absolute inset-0 opacity-20"
           style={{ backgroundImage: `repeating-linear-gradient(115deg, ${GREEN} 0px, ${GREEN} 1px, transparent 1px, transparent 40px)` }}
         />
-        {/* Decorative watermark — built from real text + an SVG hexagon (not a raster image),
-            so it stays crisp, centers cleanly, and scales correctly on every screen size. */}
+        {/* Decorative watermark logo — kept as the original artwork, just repositioned so it
+            centers cleanly within its own space and scales down sensibly on tablet/mobile
+            instead of overflowing or clipping off-screen. */}
         <div
-          className="absolute inset-0 flex items-center justify-center md:justify-end pointer-events-none select-none px-6"
+          className="absolute inset-0 flex items-center justify-center md:justify-end pointer-events-none select-none px-4 sm:px-8 md:pr-4 lg:pr-10"
           aria-hidden="true"
         >
-          <div className="relative flex items-center justify-center" style={{ width: "min(78vw, 460px)", opacity: 0.3 }}>
-            <svg viewBox="0 0 200 200" className="w-full h-auto" style={{ filter: "drop-shadow(0 0 50px rgba(117,252,8,0.55))" }}>
-              <polygon points="100,8 184,54 184,146 100,192 16,146 16,54" fill="none" stroke={GREEN} strokeWidth="2.5" />
-              <polygon points="100,34 158,67 158,133 100,166 42,133 42,67" fill="none" stroke={GREEN} strokeWidth="1.25" opacity="0.55" />
-            </svg>
-            <div className="absolute inset-0 flex flex-col items-center justify-center text-center pc-display font-black leading-[0.9]">
-              <span className="pc-neon-word" style={{ color: WHITE, fontSize: "clamp(1.25rem, 6vw, 2.75rem)" }}>PIXEL</span>
-              <span className="pc-neon-word pc-neon-delay" style={{ color: GREEN, fontSize: "clamp(1.25rem, 6vw, 2.75rem)" }}>CRUSH</span>
-            </div>
-          </div>
+          <img
+            src={LOGO_SRC}
+            alt=""
+            className="w-full h-auto"
+            style={{ maxWidth: "min(60vw, 320px)", opacity: 0.25, filter: "drop-shadow(0 0 50px rgba(117,252,8,0.55))" }}
+          />
         </div>
         <div className="relative max-w-7xl mx-auto px-5 md:px-8 pt-20 pb-24 md:pt-28 md:pb-32">
           <div className="pc-mono flex items-center gap-2 text-xs font-bold uppercase tracking-[0.3em] mb-6" style={{ color: GREEN }}>
             <span className="pc-pulse">●</span> Design · Print · Digital — Colombo, LK
           </div>
-          <h1 className="pc-display font-black leading-[0.95] text-5xl md:text-7xl lg:text-8xl max-w-4xl" style={{ textShadow: `0 0 40px rgba(117,252,8,0.25)` }}>
-            WORK THAT LOOKS <span style={{ color: GREEN, textShadow: `0 0 30px rgba(117,252,8,0.7)` }}>CRUSHINGLY</span> GOOD.
+          <h1 className="pc-display font-black leading-[0.95] text-5xl md:text-7xl lg:text-8xl max-w-4xl">
+            <span className="pc-neon-word" style={{ color: WHITE }}>WORK THAT LOOKS</span>{" "}
+            <span className="pc-neon-word pc-neon-delay" style={{ color: GREEN }}>CRUSHINGLY</span>{" "}
+            <span className="pc-neon-word" style={{ color: WHITE }}>GOOD.</span>
           </h1>
           <p className="mt-6 max-w-xl text-base md:text-lg opacity-75">
             Visiting cards, flyers, banners, social kits and more — priced by the tier, built by designers, delivered on your terms.
