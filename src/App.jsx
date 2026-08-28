@@ -205,6 +205,18 @@ async function uploadToCloudinary(file) {
   return data.secure_url; // permanent, cross-device image URL
 }
 
+// Each product image can be stored as either a plain string (a legacy
+// pre-Cloudinary IndexedDB key, or a Cloudinary URL saved before colour
+// tagging existed) or as { url, colorHex } once a colour has been
+// assigned to that photo. This normalizes either shape into one form so
+// every component that reads product images can treat them the same way.
+function normImageKey(k) {
+  if (typeof k === "string") {
+    return { raw: k, url: /^https?:\/\//.test(k) ? k : null, colorHex: null };
+  }
+  return { raw: k.url, url: k.url, colorHex: k.colorHex || null };
+}
+
 /* ---------------- Fonts + global chrome ---------------- */
 function GlobalStyle() {
   return (
@@ -563,17 +575,17 @@ function ProductGlyph({ name, active = true, className = "" }) {
 // re-uploaded).
 function ProductThumb({ keys, fallbackName, active = true, className = "" }) {
   const firstKey = keys && keys.length > 0 ? keys[0] : null;
-  const isUrl = !!firstKey && /^https?:\/\//.test(firstKey);
-  const [src, setSrc] = useState(isUrl ? firstKey : undefined); // undefined = checking, null = confirmed missing
+  const norm = firstKey ? normImageKey(firstKey) : null;
+  const [src, setSrc] = useState(norm?.url ? norm.url : undefined); // undefined = checking, null = confirmed missing
 
   useEffect(() => {
     let cancelled = false;
-    if (!firstKey) { setSrc(null); return; }
-    if (isUrl) { setSrc(firstKey); return; }
+    if (!norm) { setSrc(null); return; }
+    if (norm.url) { setSrc(norm.url); return; }
     setSrc(undefined);
-    idbGetImage(firstKey).then((data) => { if (!cancelled) setSrc(data || null); }).catch(() => { if (!cancelled) setSrc(null); });
+    idbGetImage(norm.raw).then((data) => { if (!cancelled) setSrc(data || null); }).catch(() => { if (!cancelled) setSrc(null); });
     return () => { cancelled = true; };
-  }, [firstKey, isUrl]);
+  }, [norm?.raw, norm?.url]);
 
   if (!firstKey || src === null) return <ProductGlyph name={fallbackName} active={active} className={className} />;
   if (src === undefined) return <div className={`${className} pc-mono text-[10px] flex items-center justify-center opacity-40`} style={{ background: BLACK, border: `1px solid ${GREEN}` }}>Loading…</div>;
@@ -590,9 +602,9 @@ function ProductThumb({ keys, fallbackName, active = true, className = "" }) {
 // Full gallery for the product detail page — big preview + clickable
 // thumbnail strip when there's more than one photo. Falls back to the
 // letter-glyph tile if no photos have been uploaded for this product.
-// Cloudinary keys are real URLs and render directly; any leftover
-// pre-Cloudinary IndexedDB keys still get looked up per-browser.
-function ProductGallery({ product }) {
+// When `activeColorHex` is set (the customer clicked a colour swatch),
+// the gallery jumps to whichever photo the admin tagged with that colour.
+function ProductGallery({ product, activeColorHex }) {
   const keys = product.imageKeys || [];
   const [selected, setSelected] = useState(0);
   const [srcs, setSrcs] = useState({});
@@ -605,19 +617,27 @@ function ProductGallery({ product }) {
     (async () => {
       const entries = {};
       for (const k of keys) {
-        entries[k] = /^https?:\/\//.test(k) ? k : await idbGetImage(k).catch(() => null);
+        const n = normImageKey(k);
+        entries[n.raw] = n.url || await idbGetImage(n.raw).catch(() => null);
         if (cancelled) return;
       }
       if (!cancelled) { setSrcs(entries); setLoaded(true); }
     })();
     return () => { cancelled = true; };
-  }, [keys.join(",")]);
+  }, [JSON.stringify(keys)]);
+
+  useEffect(() => {
+    if (!activeColorHex) return;
+    const idx = keys.findIndex((k) => normImageKey(k).colorHex?.toUpperCase() === activeColorHex.toUpperCase());
+    if (idx >= 0) setSelected(idx);
+  }, [activeColorHex, JSON.stringify(keys)]);
 
   if (keys.length === 0) {
     return <ProductGlyph name={product.name} className="w-full aspect-square" />;
   }
 
-  const mainSrc = srcs[keys[selected]];
+  const mainKey = normImageKey(keys[selected]);
+  const mainSrc = srcs[mainKey.raw];
 
   return (
     <div>
@@ -632,16 +652,20 @@ function ProductGallery({ product }) {
       </div>
       {keys.length > 1 && (
         <div className="flex gap-2 mt-3 overflow-x-auto pc-scrollbar">
-          {keys.map((k, i) => (
-            <button
-              key={k}
-              onClick={() => setSelected(i)}
-              className="shrink-0 pc-btn"
-              style={{ width: 64, height: 64, border: `2px solid ${i === selected ? GREEN : WHITE}`, opacity: i === selected ? 1 : 0.6 }}
-            >
-              {srcs[k] && <img src={srcs[k]} alt="" className="w-full h-full object-cover" />}
-            </button>
-          ))}
+          {keys.map((k, i) => {
+            const n = normImageKey(k);
+            return (
+              <button
+                key={n.raw}
+                onClick={() => setSelected(i)}
+                className="shrink-0 pc-btn"
+                style={{ width: 64, height: 64, border: `2px solid ${i === selected ? GREEN : WHITE}`, opacity: i === selected ? 1 : 0.6 }}
+                title={n.colorHex ? n.colorHex : undefined}
+              >
+                {srcs[n.raw] && <img src={srcs[n.raw]} alt="" className="w-full h-full object-cover" />}
+              </button>
+            );
+          })}
         </div>
       )}
     </div>
@@ -1037,6 +1061,7 @@ function ProductPage({ product, onBack, onStartOrder }) {
   const [colorInput, setColorInput] = useState("");
   const [pickerColor, setPickerColor] = useState("#75FC08");
   const [colorNotes, setColorNotes] = useState("");
+  const [activeGalleryColor, setActiveGalleryColor] = useState(null);
   const [fieldValues, setFieldValues] = useState({});
   const [notes, setNotes] = useState("");
   const [error, setError] = useState("");
@@ -1088,7 +1113,7 @@ function ProductPage({ product, onBack, onStartOrder }) {
 
       <div className="grid lg:grid-cols-2 gap-12">
         <div>
-          <ProductGallery product={product} />
+          <ProductGallery product={product} activeColorHex={activeGalleryColor} />
           <div className="mt-6 flex items-center gap-2 flex-wrap">
             <Badge tone="outline">{product.category}</Badge>
             {product.negotiable && <Badge tone="green">Negotiable pricing</Badge>}
@@ -1151,14 +1176,14 @@ function ProductPage({ product, onBack, onStartOrder }) {
 
             {product.availableColors?.length > 0 && (
               <div className="mb-4">
-                <div className="text-xs opacity-60 mb-2">Available for this product — click to select:</div>
+                <div className="text-xs opacity-60 mb-2">Available for this product — click to preview & select:</div>
                 <div className="flex flex-wrap gap-2">
                   {product.availableColors.map((c) => {
                     const active = colors.includes(c.hex);
                     return (
                       <button
                         key={c.hex}
-                        onClick={() => (active ? removeColor(colors.indexOf(c.hex)) : addSwatch(c.hex))}
+                        onClick={() => { (active ? removeColor(colors.indexOf(c.hex)) : addSwatch(c.hex)); setActiveGalleryColor(c.hex); }}
                         title={`${c.name} (${c.hex})`}
                         className="pc-btn flex items-center gap-2 px-3 py-2 text-xs font-bold"
                         style={{ border: `2px solid ${active ? GREEN : WHITE}`, background: active ? "rgba(117,252,8,0.1)" : "transparent" }}
@@ -1973,9 +1998,12 @@ function emptyProduct(defaultCategory) {
 }
 // Multi-image upload manager for the admin product editor. Handles
 // uploading each file to Cloudinary and keeping the product's imageKeys
-// array in sync (now storing real Cloudinary URLs instead of IndexedDB
-// keys, so photos show up on every device). First key = cover photo.
-function AdminImageManager({ keys, onChange }) {
+// array in sync (storing real Cloudinary URLs instead of IndexedDB keys,
+// so photos show up on every device). First key = cover photo. Each
+// photo can also be tagged with one of the product's defined colours —
+// once tagged, clicking that colour swatch on the storefront jumps the
+// customer's gallery straight to this photo.
+function AdminImageManager({ keys, colors, onChange }) {
   const [srcs, setSrcs] = useState({});
   const [uploading, setUploading] = useState(false);
   const [err, setErr] = useState("");
@@ -1987,13 +2015,14 @@ function AdminImageManager({ keys, onChange }) {
     (async () => {
       const entries = {};
       for (const k of keys) {
-        entries[k] = /^https?:\/\//.test(k) ? k : await idbGetImage(k).catch(() => null);
+        const n = normImageKey(k);
+        entries[n.raw] = n.url || await idbGetImage(n.raw).catch(() => null);
         if (cancelled) return;
       }
       if (!cancelled) setSrcs(entries);
     })();
     return () => { cancelled = true; };
-  }, [keys.join(",")]);
+  }, [JSON.stringify(keys)]);
 
   const handleFiles = async (e) => {
     const files = Array.from(e.target.files || []);
@@ -2010,7 +2039,7 @@ function AdminImageManager({ keys, onChange }) {
           continue;
         }
         const url = await uploadToCloudinary(file);
-        newKeys.push(url);
+        newKeys.push({ url, colorHex: null });
       }
       if (newKeys.length > 0) onChange([...keys, ...newKeys]);
     } catch (e) {
@@ -2020,11 +2049,24 @@ function AdminImageManager({ keys, onChange }) {
     }
   };
 
-  const removeImage = async (key) => {
-    if (!/^https?:\/\//.test(key)) idbDeleteImage(key).catch(() => {});
-    onChange(keys.filter((k) => k !== key));
+  const removeImage = (idx) => {
+    const n = normImageKey(keys[idx]);
+    if (!n.url) idbDeleteImage(n.raw).catch(() => {});
+    onChange(keys.filter((_, i) => i !== idx));
   };
-  const setCover = (key) => onChange([key, ...keys.filter((k) => k !== key)]);
+  const setCover = (idx) => {
+    const next = [...keys];
+    const [moved] = next.splice(idx, 1);
+    next.unshift(moved);
+    onChange(next);
+  };
+  const assignColor = (idx, hex) => {
+    onChange(keys.map((k, i) => {
+      if (i !== idx) return k;
+      const n = normImageKey(k);
+      return { url: n.url, colorHex: hex || null };
+    }));
+  };
 
   const onDrop = (dropIdx) => {
     if (dragIdx === null || dragIdx === dropIdx) { setDragIdx(null); setOverIdx(null); return; }
@@ -2040,44 +2082,64 @@ function AdminImageManager({ keys, onChange }) {
     <div>
       <FieldLabel required={false}>Product Images</FieldLabel>
       {keys.length > 0 && (
-        <div className="grid grid-cols-4 sm:grid-cols-5 gap-2 mb-3">
-          {keys.map((k, i) => (
-            <div
-              key={k}
-              draggable
-              onDragStart={() => setDragIdx(i)}
-              onDragOver={(e) => { e.preventDefault(); setOverIdx(i); }}
-              onDragLeave={() => setOverIdx((cur) => (cur === i ? null : cur))}
-              onDrop={() => onDrop(i)}
-              onDragEnd={() => { setDragIdx(null); setOverIdx(null); }}
-              className="relative cursor-grab active:cursor-grabbing"
-              style={{
-                border: `2px solid ${i === 0 ? GREEN : WHITE}`,
-                outline: overIdx === i && dragIdx !== null && dragIdx !== i ? `2px dashed ${GREEN}` : "none",
-                outlineOffset: 2,
-                opacity: dragIdx === i ? 0.4 : 1,
-              }}
-            >
-              {srcs[k] ? (
-                <img src={srcs[k]} alt="" className="w-full aspect-square object-cover pointer-events-none" draggable={false} />
-              ) : (
-                <div className="w-full aspect-square flex items-center justify-center pc-mono text-[9px] opacity-40">…</div>
-              )}
-              {i === 0 && (
-                <span className="absolute top-1 left-1 pc-mono text-[9px] font-bold px-1" style={{ background: GREEN, color: BLACK }}>Cover</span>
-              )}
-              <div className="absolute bottom-1 right-1 flex gap-1">
-                {i !== 0 && (
-                  <button onClick={() => setCover(k)} className="p-1" style={{ background: BLACK, border: `1px solid ${WHITE}` }} title="Set as cover photo">
-                    <Star size={10} color={WHITE} />
-                  </button>
-                )}
-                <button onClick={() => removeImage(k)} className="p-1" style={{ background: BLACK, border: `1px solid ${WHITE}` }} title="Remove">
-                  <Trash2 size={10} color={WHITE} />
-                </button>
+        <div className="grid grid-cols-3 sm:grid-cols-4 gap-2 mb-3">
+          {keys.map((k, i) => {
+            const n = normImageKey(k);
+            return (
+              <div
+                key={n.raw}
+                draggable
+                onDragStart={() => setDragIdx(i)}
+                onDragOver={(e) => { e.preventDefault(); setOverIdx(i); }}
+                onDragLeave={() => setOverIdx((cur) => (cur === i ? null : cur))}
+                onDrop={() => onDrop(i)}
+                onDragEnd={() => { setDragIdx(null); setOverIdx(null); }}
+                className="cursor-grab active:cursor-grabbing"
+              >
+                <div
+                  className="relative"
+                  style={{
+                    border: `2px solid ${i === 0 ? GREEN : WHITE}`,
+                    outline: overIdx === i && dragIdx !== null && dragIdx !== i ? `2px dashed ${GREEN}` : "none",
+                    outlineOffset: 2,
+                    opacity: dragIdx === i ? 0.4 : 1,
+                  }}
+                >
+                  {srcs[n.raw] ? (
+                    <img src={srcs[n.raw]} alt="" className="w-full aspect-square object-cover pointer-events-none" draggable={false} />
+                  ) : (
+                    <div className="w-full aspect-square flex items-center justify-center pc-mono text-[9px] opacity-40">…</div>
+                  )}
+                  {i === 0 && (
+                    <span className="absolute top-1 left-1 pc-mono text-[9px] font-bold px-1" style={{ background: GREEN, color: BLACK }}>Cover</span>
+                  )}
+                  <div className="absolute bottom-1 right-1 flex gap-1">
+                    {i !== 0 && (
+                      <button onClick={() => setCover(i)} className="p-1" style={{ background: BLACK, border: `1px solid ${WHITE}` }} title="Set as cover photo">
+                        <Star size={10} color={WHITE} />
+                      </button>
+                    )}
+                    <button onClick={() => removeImage(i)} className="p-1" style={{ background: BLACK, border: `1px solid ${WHITE}` }} title="Remove">
+                      <Trash2 size={10} color={WHITE} />
+                    </button>
+                  </div>
+                </div>
+                <select
+                  disabled={!n.url}
+                  value={n.colorHex || ""}
+                  onChange={(e) => assignColor(i, e.target.value || null)}
+                  className="w-full mt-1 px-1 py-1 text-[10px]"
+                  style={{ background: BLACK, color: n.colorHex ? GREEN : WHITE, border: `1px solid ${n.colorHex ? GREEN : "rgba(255,255,255,0.3)"}` }}
+                  title={!n.url ? "Re-upload this photo to assign a colour" : "Assign a colour to this photo"}
+                >
+                  <option value="">No colour</option>
+                  {(colors || []).map((c) => (
+                    <option key={c.hex} value={c.hex}>{c.name}</option>
+                  ))}
+                </select>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
       <label className="pc-btn flex items-center justify-center gap-2 py-4 cursor-pointer text-sm font-bold" style={{ border: `2px dashed ${GREEN}`, background: BLACK }}>
@@ -2085,7 +2147,7 @@ function AdminImageManager({ keys, onChange }) {
         <Upload size={16} style={{ color: GREEN }} /> {uploading ? "Uploading…" : "Add Images (select multiple at once)"}
       </label>
       {err && <div className="mt-2 text-xs font-bold px-3 py-2.5" style={{ background: BLACK, color: GREEN, border: `1px solid ${GREEN}` }}>{err}</div>}
-      <p className="mt-2 text-xs opacity-50">Drag photos to reorder them — this is the order shown on the product page. First photo is the cover shown on the shop grid.</p>
+      <p className="mt-2 text-xs opacity-50">Drag photos to reorder them — this is the order shown on the product page. First photo is the cover shown on the shop grid. Tag a photo with a colour so customers see it automatically when they pick that colour.</p>
     </div>
   );
 }
@@ -2126,7 +2188,7 @@ function AdminColorManager({ colors, onChange }) {
         <TextInput placeholder='Colour name, e.g. "Forest Green"' value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), addColor())} />
         <OutlineButton onClick={addColor} className="!px-4 whitespace-nowrap shrink-0"><PlusCircle size={14} /> Add</OutlineButton>
       </div>
-      <p className="mt-2 text-xs opacity-50">Only these colours show as options on the product page. Customers can still request a custom colour separately.</p>
+      <p className="mt-2 text-xs opacity-50">Only these colours show as options on the product page. Customers can still request a custom colour separately. Add your colours here first, then tag each uploaded photo below with the matching colour.</p>
     </div>
   );
 }
@@ -2177,9 +2239,9 @@ function ProductsAdmin({ products, categories, onAddCategory, editingProduct, se
           </div>
           <div><FieldLabel required={false}>Description</FieldLabel><TextArea rows={3} value={p.description} onChange={(e) => set({ description: e.target.value })} /></div>
 
-          <AdminImageManager keys={p.imageKeys || []} onChange={(imageKeys) => set({ imageKeys })} />
-
           <AdminColorManager colors={p.availableColors || []} onChange={(availableColors) => set({ availableColors })} />
+
+          <AdminImageManager keys={p.imageKeys || []} colors={p.availableColors || []} onChange={(imageKeys) => set({ imageKeys })} />
 
           <div className="grid sm:grid-cols-2 gap-4">
             <div><FieldLabel required>Minimum Quantity</FieldLabel><TextInput type="number" min={1} value={p.minQty} onChange={(e) => set({ minQty: Number(e.target.value) })} /></div>
@@ -2767,7 +2829,7 @@ export default function App() {
     // Cloudinary URLs are left in place (deleting them requires a signed
     // request, which isn't safe to do from the browser); only clean up
     // any leftover pre-Cloudinary IndexedDB keys.
-    (p?.imageKeys || []).forEach((k) => { if (!/^https?:\/\//.test(k)) idbDeleteImage(k).catch(() => {}); });
+    (p?.imageKeys || []).forEach((k) => { const n = normImageKey(k); if (!n.url) idbDeleteImage(n.raw).catch(() => {}); });
     deleteDocById("products", id);
   };
   const handleToggleProduct = (id) => {
