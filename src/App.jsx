@@ -917,28 +917,25 @@ function Landing({ products, reviews, categories, onViewProduct, onNav, scrollTo
           className="absolute inset-0 opacity-20"
           style={{ backgroundImage: `repeating-linear-gradient(115deg, ${GREEN} 0px, ${GREEN} 1px, transparent 1px, transparent 40px)` }}
         />
-        {/* Decorative watermark logo — kept as the original artwork, just repositioned so it
-            centers cleanly within its own space and scales down sensibly on tablet/mobile
-            instead of overflowing or clipping off-screen. */}
+        {/* Decorative watermark logo — positioned to sit vertically centered alongside the
+            headline (not the whole hero), so it doesn't drift down past the text. */}
         <div
-          className="absolute inset-0 flex items-center justify-center md:justify-end pointer-events-none select-none px-4 sm:px-8 md:pr-4 lg:pr-10"
+          className="absolute inset-0 flex items-start justify-center md:justify-end pointer-events-none select-none px-6 pt-24 sm:pt-28 md:pt-36 md:pr-4 lg:pr-10"
           aria-hidden="true"
         >
           <img
             src={LOGO_SRC}
             alt=""
             className="w-full h-auto"
-            style={{ maxWidth: "min(60vw, 320px)", opacity: 0.25, filter: "drop-shadow(0 0 50px rgba(117,252,8,0.55))" }}
+            style={{ maxWidth: "min(50vw, 280px)", opacity: 0.25, filter: "drop-shadow(0 0 50px rgba(117,252,8,0.55))" }}
           />
         </div>
         <div className="relative max-w-7xl mx-auto px-5 md:px-8 pt-20 pb-24 md:pt-28 md:pb-32">
           <div className="pc-mono flex items-center gap-2 text-xs font-bold uppercase tracking-[0.3em] mb-6" style={{ color: GREEN }}>
             <span className="pc-pulse">●</span> Design · Print · Digital — Colombo, LK
           </div>
-          <h1 className="pc-display font-black leading-[0.95] text-5xl md:text-7xl lg:text-8xl max-w-4xl">
-            <span className="pc-neon-word" style={{ color: WHITE }}>WORK THAT LOOKS</span>{" "}
-            <span className="pc-neon-word pc-neon-delay" style={{ color: GREEN }}>CRUSHINGLY</span>{" "}
-            <span className="pc-neon-word" style={{ color: WHITE }}>GOOD.</span>
+          <h1 className="pc-display font-black leading-[0.95] text-5xl md:text-7xl lg:text-8xl max-w-4xl" style={{ textShadow: `0 0 40px rgba(117,252,8,0.25)` }}>
+            WORK THAT LOOKS <span style={{ color: GREEN, textShadow: `0 0 30px rgba(117,252,8,0.7)` }}>CRUSHINGLY</span> GOOD.
           </h1>
           <p className="mt-6 max-w-xl text-base md:text-lg opacity-75">
             Visiting cards, flyers, banners, social kits and more — priced by the tier, built by designers, delivered on your terms.
