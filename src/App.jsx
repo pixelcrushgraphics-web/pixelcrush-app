@@ -7,19 +7,44 @@ import {
   CheckCircle2, Clock, AlertCircle, Filter, ChevronDown, Volume2, VolumeX, Settings, KeyRound,
   Upload, FileText, Image as ImageIcon
 } from "lucide-react";
+import { initializeApp } from "firebase/app";
+import {
+  getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, getDoc,
+} from "firebase/firestore";
+import {
+  getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword,
+  signOut, onAuthStateChanged, sendPasswordResetEmail, updateProfile,
+  updateEmail, updatePassword, EmailAuthProvider, reauthenticateWithCredential,
+  verifyPasswordResetCode, confirmPasswordReset,
+} from "firebase/auth";
 
 /* ============================================================
-   PIXEL CRUSH — creative studio ordering platform (prototype)
+   PIXEL CRUSH — creative studio ordering platform
    Palette: #FFFFFF / #75FC08 / #000000 only.
-   Data persists via window.storage (shared) so the catalogue,
-   orders, reviews and bank details survive across sessions.
+   Products, orders, reviews, bank details, and accounts all live
+   in Firestore (shared across every device/browser). Product photos
+   still live in each browser's IndexedDB for now — cross-device photo
+   sync needs Firebase Storage, which is a paid-tier feature; this can
+   be added later without touching anything else.
    ============================================================ */
+
+const firebaseConfig = {
+  apiKey: "AIzaSyA0q3BX0qbWEjfXCvL20gLjwF2FXfnkByM",
+  authDomain: "pixel-crush-a3082.firebaseapp.com",
+  projectId: "pixel-crush-a3082",
+  storageBucket: "pixel-crush-a3082.firebasestorage.app",
+  messagingSenderId: "692219770372",
+  appId: "1:692219770372:web:f490e5fb5c4f93d76d6751",
+};
+const fbApp = initializeApp(firebaseConfig);
+const db = getFirestore(fbApp);
+const auth = getAuth(fbApp);
 
 const GREEN = "#75FC08";
 const BLACK = "#000000";
 const WHITE = "#FFFFFF";
-const ADMIN_EMAILS = ["admin@pixelcrush.lk"];
-const ADMIN_DEFAULT_PASSWORD = "PixelCrush2026!";
+const ADMIN_EMAILS = ["admin@pixelcrush.lk"]; // reserved — blocked from public sign-up. Create this account manually in Firebase Console → Authentication.
+const ADMIN_DEFAULT_PASSWORD = "PixelCrush2026!"; // use this when creating the admin user above, then change it via the Admin Account tab once signed in.
 
 /* ============================================================
    EMAILJS CONFIG — fill these in to send real emails.
@@ -64,13 +89,6 @@ const INTRO_VIDEO_SRC = "data:video/mp4;base64," + INTRO_VIDEO_B64;
 const uid = (p = "id") => `${p}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 const fmtLKR = (n) => `LKR ${Number(n || 0).toLocaleString("en-LK")}`;
 const fmtDate = (d) => new Date(d).toLocaleString("en-LK", { dateStyle: "medium", timeStyle: "short" });
-
-/* NOTE: this is a client-only prototype. Obfuscating passwords with base64
-   is NOT real security — anyone with dev tools can decode it. A production
-   build needs a real backend that hashes and verifies passwords server-side. */
-const obfuscate = (s) => { try { return btoa(unescape(encodeURIComponent(s))); } catch (e) { return s; } };
-const deobfuscate = (s) => { try { return decodeURIComponent(escape(atob(s))); } catch (e) { return ""; } };
-const generateResetToken = () => Array.from({ length: 32 }, () => Math.floor(Math.random() * 36).toString(36)).join("");
 
 const MAX_UPLOAD_MB = 8;
 
@@ -198,25 +216,96 @@ function GlobalStyle() {
   );
 }
 
-/* ---------------- Storage helpers ----------------
-   Standalone build: persists to the browser's localStorage instead of
-   Claude's window.storage API. Data lives only in this browser, on
-   this machine — swap this out for a real backend/database before
-   using this with real customers. */
-async function loadKey(key, fallback) {
-  try {
-    const raw = localStorage.getItem(key);
-    return raw ? JSON.parse(raw) : fallback;
-  } catch (e) {
-    return fallback;
-  }
+/* ---------------- Firestore helpers ----------------
+   Each of these Firestore collections holds one document per item
+   (a product, an order, a review, a notification), keyed by that
+   item's own id. watchCollection() sets up a real-time listener —
+   every browser watching the same collection gets updates instantly,
+   which is what actually solves "I added a product but can't see it
+   on my phone." Bank details are a single document since there's
+   only ever one set of bank info. */
+function watchCollection(name, callback) {
+  return onSnapshot(collection(db, name), (snap) => {
+    const items = [];
+    snap.forEach((d) => items.push({ ...d.data(), id: d.id }));
+    callback(items);
+  }, (err) => console.error(`watch ${name} failed`, err));
 }
-async function saveKey(key, value) {
-  try {
-    localStorage.setItem(key, JSON.stringify(value));
-  } catch (e) {
-    console.error("storage save failed", key, e);
-  }
+async function saveDoc(collectionName, id, data) {
+  await setDoc(doc(db, collectionName, id), data);
+}
+async function deleteDocById(collectionName, id) {
+  await deleteDoc(doc(db, collectionName, id));
+}
+function watchBank(callback) {
+  return onSnapshot(doc(db, "settings", "bank"), (d) => {
+    callback(d.exists() ? d.data() : null);
+  }, (err) => console.error("watch bank failed", err));
+}
+async function saveBankDoc(data) {
+  await setDoc(doc(db, "settings", "bank"), data);
+}
+function watchCategories(callback) {
+  return onSnapshot(doc(db, "settings", "categories"), (d) => {
+    callback(d.exists() ? d.data().list || [] : []);
+  }, (err) => console.error("watch categories failed", err));
+}
+async function addCategoryDoc(existing, name) {
+  const trimmed = name.trim();
+  if (!trimmed || existing.some((c) => c.toLowerCase() === trimmed.toLowerCase())) return;
+  await setDoc(doc(db, "settings", "categories"), { list: [...existing, trimmed] });
+}
+
+/* ---------------- Firebase Auth helpers ---------------- */
+async function fbSignUp(email, name, password) {
+  const cred = await createUserWithEmailAndPassword(auth, email, password);
+  await updateProfile(cred.user, { displayName: name });
+  await saveDoc("users", cred.user.uid, { email: email.trim().toLowerCase(), name, role: "customer" });
+  return cred.user;
+}
+async function fbSignIn(email, password) {
+  return signInWithEmailAndPassword(auth, email, password);
+}
+async function fbSignOut() {
+  return signOut(auth);
+}
+async function fbRequestPasswordReset(email) {
+  const actionCodeSettings = {
+    url: window.location.origin + window.location.pathname,
+    handleCodeInApp: true,
+  };
+  await sendPasswordResetEmail(auth, email, actionCodeSettings);
+}
+async function fbConfirmPasswordReset(oobCode, newPassword) {
+  await confirmPasswordReset(auth, oobCode, newPassword);
+}
+function mapAuthError(e) {
+  const code = e?.code || "";
+  if (code.includes("wrong-password") || code.includes("invalid-credential")) return "Incorrect password.";
+  if (code.includes("user-not-found")) return "No account found with that email.";
+  if (code.includes("email-already-in-use")) return "An account with that email already exists — try signing in instead.";
+  if (code.includes("weak-password")) return "Password must be at least 6 characters.";
+  if (code.includes("invalid-email")) return "Please enter a valid email address.";
+  if (code.includes("too-many-requests")) return "Too many attempts — please wait a moment and try again.";
+  if (code.includes("requires-recent-login")) return "Please sign out and sign back in, then try again.";
+  return "Something went wrong — please try again.";
+}
+// Seeds the catalogue/reviews/bank details exactly once, ever — tracked by
+// a flag doc so intentionally deleting everything later doesn't bring the
+// seed data back.
+async function ensureSeeded() {
+  const metaRef = doc(db, "settings", "meta");
+  const metaSnap = await getDoc(metaRef);
+  if (metaSnap.exists() && metaSnap.data().seeded) return;
+  const products = seedProducts();
+  const reviews = seedReviews();
+  await Promise.all([
+    ...products.map((p) => saveDoc("products", p.id, p)),
+    ...reviews.map((r) => saveDoc("reviews", r.id, r)),
+    saveBankDoc(seedBank()),
+    setDoc(doc(db, "settings", "categories"), { list: DEFAULT_CATEGORIES }),
+    setDoc(metaRef, { seeded: true }),
+  ]);
 }
 
 /* ---------------- Seed data ---------------- */
@@ -318,7 +407,7 @@ const seedBank = () => ({
   instructions: "Please use your Order ID as the payment reference and share the slip on WhatsApp for faster confirmation.",
 });
 
-const CATEGORIES = ["All", "Business Cards", "Marketing Materials", "Printing", "Digital Designs", "Invitations", "Brochures"];
+const DEFAULT_CATEGORIES = ["Business Cards", "Marketing Materials", "Printing", "Digital Designs", "Invitations", "Brochures"];
 const ORDER_STATUSES = ["New", "Contacted", "Payment Pending", "Payment Confirmed", "In Progress", "Completed", "Cancelled"];
 const PAYMENT_STATUSES = ["Payment Pending", "Payment Proof Submitted", "Payment Confirmed", "Payment Rejected"];
 
@@ -498,7 +587,7 @@ function ProductGallery({ product }) {
     <div>
       <div className="w-full aspect-square overflow-hidden flex items-center justify-center" style={{ background: BLACK, border: `1px solid ${GREEN}` }}>
         {mainSrc ? (
-          <img src={mainSrc} alt={product.name} className="w-full h-full object-cover" />
+          <img src={mainSrc} alt={product.name} className="max-w-full max-h-full object-contain" />
         ) : (
           <span className="pc-mono text-xs opacity-40">Loading…</span>
         )}
@@ -704,7 +793,7 @@ function Footer({ onNav, bank }) {
 /* ================================================================
    LANDING PAGE
    ================================================================ */
-function Landing({ products, reviews, onViewProduct, onNav, scrollTo }) {
+function Landing({ products, reviews, categories, onViewProduct, onNav, scrollTo }) {
   const [category, setCategory] = useState("All");
   const [query, setQuery] = useState("");
   const [maxPrice, setMaxPrice] = useState(10000);
@@ -800,7 +889,7 @@ function Landing({ products, reviews, onViewProduct, onNav, scrollTo }) {
               <div className="mb-8">
                 <div className="text-xs font-bold uppercase tracking-wider mb-3 pc-mono">Category</div>
                 <div className="flex flex-wrap lg:flex-col gap-2">
-                  {CATEGORIES.map((c) => (
+                  {["All", ...categories].map((c) => (
                     <button
                       key={c}
                       onClick={() => setCategory(c)}
@@ -844,7 +933,7 @@ function Landing({ products, reviews, onViewProduct, onNav, scrollTo }) {
                   const cheapest = Math.min(...p.tiers.map((t) => t.price));
                   return (
                     <div key={p.id} className="pc-card group cursor-pointer" style={{ background: BLACK, border: `2px solid ${GREEN}` }} onClick={() => onViewProduct(p.id)}>
-                      <ProductThumb keys={p.imageKeys} fallbackName={p.name} className="w-full h-44" />
+                      <ProductThumb keys={p.imageKeys} fallbackName={p.name} className="w-full aspect-square" />
                       <div className="p-5">
                         <div className="flex items-center justify-between mb-2">
                           <Badge tone="outline">{p.category}</Badge>
@@ -914,8 +1003,6 @@ function ProductPage({ product, onBack, onStartOrder }) {
   const [notes, setNotes] = useState("");
   const [error, setError] = useState("");
 
-  const PRESET_SWATCHES = ["#000000", "#FFFFFF", "#75FC08", "#FF3B30", "#0A84FF", "#FFD60A", "#FF9F0A", "#BF5AF2", "#FF2D95", "#00C7BE"];
-
   const selectedTier = tierIdx >= 0 ? product.tiers[tierIdx] : null;
   const qty = product.negotiable ? customQty : selectedTier?.qty || 0;
   const price = product.negotiable ? null : selectedTier?.price || 0;
@@ -964,9 +1051,10 @@ function ProductPage({ product, onBack, onStartOrder }) {
       <div className="grid lg:grid-cols-2 gap-12">
         <div>
           <ProductGallery product={product} />
-          <div className="mt-6 flex gap-2">
+          <div className="mt-6 flex items-center gap-2 flex-wrap">
             <Badge tone="outline">{product.category}</Badge>
             {product.negotiable && <Badge tone="green">Negotiable pricing</Badge>}
+            {product.productCode && <span className="pc-mono text-xs opacity-50">Code: {product.productCode}</span>}
           </div>
         </div>
 
@@ -1022,6 +1110,30 @@ function ProductPage({ product, onBack, onStartOrder }) {
           {/* colors */}
           <div className="mt-8">
             <div className="text-xs font-bold uppercase tracking-wider mb-3 pc-mono">Preferred Colours</div>
+
+            {product.availableColors?.length > 0 && (
+              <div className="mb-4">
+                <div className="text-xs opacity-60 mb-2">Available for this product — click to select:</div>
+                <div className="flex flex-wrap gap-2">
+                  {product.availableColors.map((c) => {
+                    const active = colors.includes(c.hex);
+                    return (
+                      <button
+                        key={c.hex}
+                        onClick={() => (active ? removeColor(colors.indexOf(c.hex)) : addSwatch(c.hex))}
+                        title={`${c.name} (${c.hex})`}
+                        className="pc-btn flex items-center gap-2 px-3 py-2 text-xs font-bold"
+                        style={{ border: `2px solid ${active ? GREEN : WHITE}`, background: active ? "rgba(117,252,8,0.1)" : "transparent" }}
+                      >
+                        <span style={{ width: 16, height: 16, background: c.hex, border: `1px solid ${WHITE}`, display: "inline-block" }} />
+                        {c.name}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             <div className="flex flex-wrap gap-2 mb-3">
               {colors.map((c, i) => {
                 const isHex = /^#[0-9A-Fa-f]{3,8}$/.test(c);
@@ -1035,40 +1147,33 @@ function ProductPage({ product, onBack, onStartOrder }) {
               })}
             </div>
 
-            {/* color picker + presets */}
-            <div className="flex items-center gap-3 mb-3">
-              <label className="relative shrink-0" style={{ width: 44, height: 44, border: `2px solid ${GREEN}` }}>
-                <input
-                  type="color"
-                  value={pickerColor}
-                  onChange={(e) => setPickerColor(e.target.value)}
-                  className="absolute inset-0 w-full h-full cursor-pointer opacity-0"
+            <div className="p-4 mb-3" style={{ border: `1px dashed ${GREEN}` }}>
+              <div className="text-xs opacity-60 mb-3">
+                Need a colour not listed above? Pick it here — we'll capture the exact hex code so we can match it precisely. You can also contact us directly for anything unusual.
+              </div>
+              <div className="flex items-center gap-3">
+                <label className="relative shrink-0" style={{ width: 44, height: 44, border: `2px solid ${GREEN}` }}>
+                  <input
+                    type="color"
+                    value={pickerColor}
+                    onChange={(e) => setPickerColor(e.target.value)}
+                    className="absolute inset-0 w-full h-full cursor-pointer opacity-0"
+                  />
+                  <div className="absolute inset-0.5 pointer-events-none" style={{ background: pickerColor }} />
+                </label>
+                <TextInput
+                  value={pickerColor.toUpperCase()}
+                  onChange={(e) => {
+                    const v = e.target.value.startsWith("#") ? e.target.value : `#${e.target.value}`;
+                    setPickerColor(v);
+                  }}
+                  className="!w-28"
+                  maxLength={7}
                 />
-                <div className="absolute inset-0.5 pointer-events-none" style={{ background: pickerColor }} />
-              </label>
-              <TextInput
-                value={pickerColor.toUpperCase()}
-                onChange={(e) => {
-                  const v = e.target.value.startsWith("#") ? e.target.value : `#${e.target.value}`;
-                  setPickerColor(v);
-                }}
-                className="!w-28"
-                maxLength={7}
-              />
-              <OutlineButton onClick={() => addSwatch(pickerColor.toUpperCase())} className="!px-4 !py-2.5 whitespace-nowrap">
-                <PlusCircle size={15} /> Add Colour
-              </OutlineButton>
-            </div>
-            <div className="flex flex-wrap gap-2 mb-4">
-              {PRESET_SWATCHES.map((hex) => (
-                <button
-                  key={hex}
-                  onClick={() => addSwatch(hex)}
-                  title={hex}
-                  style={{ width: 26, height: 26, background: hex, border: `1.5px solid ${WHITE}` }}
-                  className="pc-btn shrink-0"
-                />
-              ))}
+                <OutlineButton onClick={() => addSwatch(pickerColor.toUpperCase())} className="!px-4 !py-2.5 whitespace-nowrap">
+                  <PlusCircle size={15} /> Add Colour
+                </OutlineButton>
+              </div>
             </div>
 
             <div className="flex gap-2">
@@ -1347,25 +1452,24 @@ function Confirmation({ order, bank, onNav }) {
    LOGIN / SIGN UP / FORGOT PASSWORD
    ================================================================ */
 function LoginScreen({ onSignIn, onSignUp, onRequestReset, onResetPassword, onNav, initialReset }) {
-  const [mode, setMode] = useState("signin"); // "signin" | "signup" | "forgot" | "reset"
+  const [mode, setMode] = useState("signin"); // "signin" | "signup" | "forgot" | "link-sent" | "reset"
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
-  const [resetToken, setResetToken] = useState(null);
+  const [oobCode, setOobCode] = useState(null);
   const [newPassword, setNewPassword] = useState("");
   const [confirmNewPassword, setConfirmNewPassword] = useState("");
-  const [demoLink, setDemoLink] = useState(null);
   const [info, setInfo] = useState("");
   const [error, setError] = useState("");
   const [showPw, setShowPw] = useState(false);
 
-  // If we arrived via a real reset link (?reset_token=&email=), jump straight
-  // into the "set new password" step — clicking the link already proves it's you.
+  // If we arrived via the real reset link Firebase emailed (?mode=resetPassword&oobCode=...),
+  // jump straight into "set new password" — the App root already verified the code is valid.
   useEffect(() => {
     if (initialReset) {
       setEmail(initialReset.email);
-      setResetToken(initialReset.token);
+      setOobCode(initialReset.oobCode);
       setMode("reset");
       setInfo("Link verified — set your new password below.");
     }
@@ -1373,51 +1477,39 @@ function LoginScreen({ onSignIn, onSignUp, onRequestReset, onResetPassword, onNa
 
   const goto = (m) => { setMode(m); setError(""); setInfo(""); };
 
-  const submit = () => {
+  const submit = async () => {
     setError("");
     if (!email.trim() || !email.includes("@")) return setError("Please enter a valid email address.");
     if (!password) return setError("Please enter your password.");
 
     if (mode === "signin") {
-      const res = onSignIn(email, password);
+      const res = await onSignIn(email, password);
       if (!res.ok) setError(res.error);
     } else {
       if (!name.trim()) return setError("Please enter your full name.");
       if (password.length < 6) return setError("Password must be at least 6 characters.");
       if (password !== confirmPassword) return setError("Passwords don't match.");
-      const res = onSignUp(email, name, password);
+      const res = await onSignUp(email, name, password);
       if (!res.ok) setError(res.error);
     }
   };
 
   const submitForgot = async () => {
-    setError(""); setInfo(""); setDemoLink(null);
+    setError(""); setInfo("");
     if (!email.trim() || !email.includes("@")) return setError("Please enter a valid email address.");
     const res = await onRequestReset(email);
     if (!res.ok) return setError(res.error);
-    setResetToken(res.token);
-    if (res.sent) {
-      setInfo(`A reset link was emailed to ${email.trim().toLowerCase()}. Check your inbox (and spam folder).`);
-      setMode("link-sent");
-    } else {
-      setDemoLink(res.link);
-      setInfo(`No email service configured — showing the link here instead (demo mode).`);
-      setMode("link-sent");
-    }
+    setInfo(`A reset link was emailed to ${email.trim().toLowerCase()}. Check your inbox (and spam folder).`);
+    setMode("link-sent");
   };
 
-  const openResetLink = () => {
-    setInfo("Link verified — set your new password below.");
-    setMode("reset");
-  };
-
-  const submitReset = () => {
+  const submitReset = async () => {
     setError("");
     if (newPassword.length < 6) return setError("New password must be at least 6 characters.");
     if (newPassword !== confirmNewPassword) return setError("Passwords don't match.");
-    const res = onResetPassword(email, resetToken, newPassword);
+    const res = await onResetPassword(oobCode, newPassword);
     if (!res.ok) return setError(res.error);
-    setPassword(""); setNewPassword(""); setConfirmNewPassword(""); setDemoLink(null); setResetToken(null);
+    setPassword(""); setNewPassword(""); setConfirmNewPassword(""); setOobCode(null);
     setInfo("Password reset — you can sign in now.");
     setMode("signin");
   };
@@ -1518,19 +1610,10 @@ function LoginScreen({ onSignIn, onSignUp, onRequestReset, onResetPassword, onNa
 
       {mode === "link-sent" && (
         <>
-          <h1 className="pc-display font-black text-3xl mb-2">Check your link</h1>
-          <p className="text-sm opacity-70 mb-6">For <b>{email.trim().toLowerCase()}</b>. The link expires in 10 minutes and can only be used once.</p>
+          <h1 className="pc-display font-black text-3xl mb-2">Check your inbox</h1>
+          <p className="text-sm opacity-70 mb-6">We emailed a reset link to <b>{email.trim().toLowerCase()}</b>. Click it there to set a new password.</p>
 
           {info && <div className="mb-4 text-xs font-bold px-3 py-2.5" style={{ background: BLACK, color: GREEN, border: `1px solid ${GREEN}` }}>{info}</div>}
-
-          {demoLink && (
-            <div className="mb-6 p-4" style={{ background: BLACK, border: `2px solid ${GREEN}`, boxShadow: `0 0 24px rgba(117,252,8,0.25)` }}>
-              <div className="pc-mono text-[10px] font-bold uppercase tracking-widest mb-1" style={{ color: GREEN }}>Demo mode — no email service configured</div>
-              <p className="text-xs opacity-70 mb-3">Here's the link that would have been emailed:</p>
-              <div className="pc-mono text-[11px] break-all mb-4 opacity-80">{demoLink}</div>
-              <GreenButton onClick={openResetLink} full className="!py-3">Open Reset Link <ArrowRight size={15} /></GreenButton>
-            </div>
-          )}
 
           <div className="flex justify-between text-xs">
             <button onClick={submitForgot} className="pc-underline font-bold" style={{ color: GREEN }}>Resend link</button>
@@ -1559,9 +1642,6 @@ function LoginScreen({ onSignIn, onSignUp, onRequestReset, onResetPassword, onNa
         </>
       )}
 
-      <div className="mt-8 p-4 text-xs opacity-60 leading-relaxed" style={{ border: `1px dashed ${WHITE}` }}>
-        Prototype auth — accounts are stored in this browser session's shared storage, not a real secured backend. Don't reuse a real password here.
-      </div>
     </div>
   );
 }
@@ -1661,7 +1741,7 @@ function CustomerDashboard({ user, orders, onNav, onSubmitReview }) {
    ADMIN DASHBOARD
    ================================================================ */
 function AdminDashboard({
-  user, products, orders, reviews, customers, bank, notifications,
+  user, products, categories, onAddCategory, orders, reviews, customers, bank, notifications,
   onSaveProduct, onDeleteProduct, onToggleProduct,
   onUpdateOrder, onSaveBank,
   onSetReviewStatus, onDeleteReview,
@@ -1788,6 +1868,8 @@ function AdminDashboard({
       {tab === "products" && (
         <ProductsAdmin
           products={products}
+          categories={categories}
+          onAddCategory={onAddCategory}
           editingProduct={editingProduct}
           setEditingProduct={setEditingProduct}
           onSaveProduct={onSaveProduct}
@@ -1843,10 +1925,12 @@ function AdminDashboard({
 }
 
 /* ---- Admin: Products ---- */
-function emptyProduct() {
+const genProductCode = () => "PC-" + Math.random().toString(36).slice(2, 6).toUpperCase();
+function emptyProduct(defaultCategory) {
   return {
-    id: null, name: "", category: CATEGORIES[1], description: "", active: true, negotiable: false,
+    id: null, name: "", category: defaultCategory || "", description: "", active: true, negotiable: false,
     minQty: 1, tiers: [{ qty: 1, price: 0 }], fields: [], imageKeys: [],
+    productCode: genProductCode(), availableColors: [],
   };
 }
 // Multi-image upload manager for the admin product editor. Handles
@@ -1856,6 +1940,8 @@ function AdminImageManager({ keys, onChange }) {
   const [srcs, setSrcs] = useState({});
   const [uploading, setUploading] = useState(false);
   const [err, setErr] = useState("");
+  const [dragIdx, setDragIdx] = useState(null);
+  const [overIdx, setOverIdx] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -1903,15 +1989,40 @@ function AdminImageManager({ keys, onChange }) {
   };
   const setCover = (key) => onChange([key, ...keys.filter((k) => k !== key)]);
 
+  const onDrop = (dropIdx) => {
+    if (dragIdx === null || dragIdx === dropIdx) { setDragIdx(null); setOverIdx(null); return; }
+    const next = [...keys];
+    const [moved] = next.splice(dragIdx, 1);
+    next.splice(dropIdx, 0, moved);
+    onChange(next);
+    setDragIdx(null);
+    setOverIdx(null);
+  };
+
   return (
     <div>
       <FieldLabel required={false}>Product Images</FieldLabel>
       {keys.length > 0 && (
         <div className="grid grid-cols-4 sm:grid-cols-5 gap-2 mb-3">
           {keys.map((k, i) => (
-            <div key={k} className="relative" style={{ border: `2px solid ${i === 0 ? GREEN : WHITE}` }}>
+            <div
+              key={k}
+              draggable
+              onDragStart={() => setDragIdx(i)}
+              onDragOver={(e) => { e.preventDefault(); setOverIdx(i); }}
+              onDragLeave={() => setOverIdx((cur) => (cur === i ? null : cur))}
+              onDrop={() => onDrop(i)}
+              onDragEnd={() => { setDragIdx(null); setOverIdx(null); }}
+              className="relative cursor-grab active:cursor-grabbing"
+              style={{
+                border: `2px solid ${i === 0 ? GREEN : WHITE}`,
+                outline: overIdx === i && dragIdx !== null && dragIdx !== i ? `2px dashed ${GREEN}` : "none",
+                outlineOffset: 2,
+                opacity: dragIdx === i ? 0.4 : 1,
+              }}
+            >
               {srcs[k] ? (
-                <img src={srcs[k]} alt="" className="w-full aspect-square object-cover" />
+                <img src={srcs[k]} alt="" className="w-full aspect-square object-cover pointer-events-none" draggable={false} />
               ) : (
                 <div className="w-full aspect-square flex items-center justify-center pc-mono text-[9px] opacity-40">…</div>
               )}
@@ -1937,13 +2048,56 @@ function AdminImageManager({ keys, onChange }) {
         <Upload size={16} style={{ color: GREEN }} /> {uploading ? "Uploading…" : "Add Images (select multiple at once)"}
       </label>
       {err && <div className="mt-2 text-xs font-bold px-3 py-2.5" style={{ background: BLACK, color: GREEN, border: `1px solid ${GREEN}` }}>{err}</div>}
-      <p className="mt-2 text-xs opacity-50">First image is the cover photo shown on the shop grid — click the star on another to make it the cover instead.</p>
+      <p className="mt-2 text-xs opacity-50">Drag photos to reorder them — this is the order shown on the product page. First photo is the cover shown on the shop grid.</p>
     </div>
   );
 }
 
-function ProductsAdmin({ products, editingProduct, setEditingProduct, onSaveProduct, onDeleteProduct, onToggleProduct }) {
+// Lets the admin define exactly which colors are offered for a product.
+// Only these show as clickable swatches on the storefront — customers can
+// still request a custom color separately (handled in ProductPage).
+function AdminColorManager({ colors, onChange }) {
+  const [name, setName] = useState("");
+  const [hex, setHex] = useState("#75FC08");
+
+  const addColor = () => {
+    if (!name.trim()) return;
+    onChange([...colors, { name: name.trim(), hex: hex.toUpperCase() }]);
+    setName("");
+  };
+  const removeColor = (i) => onChange(colors.filter((_, idx) => idx !== i));
+
+  return (
+    <div>
+      <FieldLabel required={false}>Available Colours</FieldLabel>
+      {colors.length > 0 && (
+        <div className="flex flex-wrap gap-2 mb-3">
+          {colors.map((c, i) => (
+            <span key={i} className="flex items-center gap-2 pc-mono text-xs font-bold px-2.5 py-1.5" style={{ border: `1.5px solid ${WHITE}` }}>
+              <span style={{ width: 14, height: 14, background: c.hex, border: `1px solid ${WHITE}`, display: "inline-block" }} />
+              {c.name} <span className="opacity-50">{c.hex}</span>
+              <button onClick={() => removeColor(i)}><XCircle size={13} /></button>
+            </span>
+          ))}
+        </div>
+      )}
+      <div className="flex items-center gap-2">
+        <label className="relative shrink-0" style={{ width: 38, height: 38, border: `2px solid ${GREEN}` }}>
+          <input type="color" value={hex} onChange={(e) => setHex(e.target.value)} className="absolute inset-0 w-full h-full cursor-pointer opacity-0" />
+          <div className="absolute inset-0.5 pointer-events-none" style={{ background: hex }} />
+        </label>
+        <TextInput placeholder='Colour name, e.g. "Forest Green"' value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), addColor())} />
+        <OutlineButton onClick={addColor} className="!px-4 whitespace-nowrap shrink-0"><PlusCircle size={14} /> Add</OutlineButton>
+      </div>
+      <p className="mt-2 text-xs opacity-50">Only these colours show as options on the product page. Customers can still request a custom colour separately.</p>
+    </div>
+  );
+}
+
+function ProductsAdmin({ products, categories, onAddCategory, editingProduct, setEditingProduct, onSaveProduct, onDeleteProduct, onToggleProduct }) {
   const isNew = editingProduct && !editingProduct.id;
+  const [newCategory, setNewCategory] = useState("");
+  const [search, setSearch] = useState("");
 
   if (editingProduct) {
     const p = editingProduct;
@@ -1961,13 +2115,28 @@ function ProductsAdmin({ products, editingProduct, setEditingProduct, onSaveProd
             <div>
               <FieldLabel required>Category</FieldLabel>
               <select value={p.category} onChange={(e) => set({ category: e.target.value })} className="w-full px-3.5 py-2.5 text-sm" style={{ background: BLACK, color: WHITE, border: `2px solid ${GREEN}` }}>
-                {CATEGORIES.filter((c) => c !== "All").map((c) => <option key={c}>{c}</option>)}
+                {!categories.includes(p.category) && p.category && <option value={p.category}>{p.category}</option>}
+                {categories.map((c) => <option key={c}>{c}</option>)}
               </select>
+              <div className="flex gap-2 mt-2">
+                <TextInput placeholder="Add a new category…" value={newCategory} onChange={(e) => setNewCategory(e.target.value)} className="!py-1.5 !text-xs" />
+                <button
+                  onClick={() => { if (newCategory.trim()) { onAddCategory(newCategory.trim()); set({ category: newCategory.trim() }); setNewCategory(""); } }}
+                  className="pc-btn px-3 shrink-0" style={{ border: `2px solid ${GREEN}`, color: GREEN }}
+                ><PlusCircle size={14} /></button>
+              </div>
             </div>
+          </div>
+          <div>
+            <FieldLabel required={false}>Product Code</FieldLabel>
+            <TextInput value={p.productCode || ""} onChange={(e) => set({ productCode: e.target.value.toUpperCase() })} className="!w-48" />
+            <p className="mt-1 text-xs opacity-50">Auto-generated — feel free to edit it to match your own numbering.</p>
           </div>
           <div><FieldLabel required={false}>Description</FieldLabel><TextArea rows={3} value={p.description} onChange={(e) => set({ description: e.target.value })} /></div>
 
           <AdminImageManager keys={p.imageKeys || []} onChange={(imageKeys) => set({ imageKeys })} />
+
+          <AdminColorManager colors={p.availableColors || []} onChange={(availableColors) => set({ availableColors })} />
 
           <div className="grid sm:grid-cols-2 gap-4">
             <div><FieldLabel required>Minimum Quantity</FieldLabel><TextInput type="number" min={1} value={p.minQty} onChange={(e) => set({ minQty: Number(e.target.value) })} /></div>
@@ -2033,20 +2202,32 @@ function ProductsAdmin({ products, editingProduct, setEditingProduct, onSaveProd
     );
   }
 
+  const filteredProducts = React.useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return products;
+    return products.filter((p) => p.productCode?.toLowerCase().includes(q) || p.name.toLowerCase().includes(q));
+  }, [products, search]);
+
   return (
     <div>
-      <div className="flex justify-between items-center mb-6">
-        <h3 className="pc-mono text-xs font-bold uppercase tracking-wider">{products.length} Products</h3>
-        <GreenButton onClick={() => setEditingProduct(emptyProduct())} className="!px-4 !py-2.5 !text-xs"><Plus size={14} /> New Product</GreenButton>
+      <div className="flex flex-wrap justify-between items-center gap-3 mb-6">
+        <h3 className="pc-mono text-xs font-bold uppercase tracking-wider">{filteredProducts.length} of {products.length} Products</h3>
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 w-56">
+            <Search size={14} />
+            <TextInput placeholder="Search by code or name…" value={search} onChange={(e) => setSearch(e.target.value)} className="!py-2 !text-xs" />
+          </div>
+          <GreenButton onClick={() => setEditingProduct(emptyProduct(categories[0]))} className="!px-4 !py-2.5 !text-xs shrink-0"><Plus size={14} /> New Product</GreenButton>
+        </div>
       </div>
       <div className="space-y-3">
-        {products.map((p) => (
+        {filteredProducts.map((p) => (
           <div key={p.id} className="p-4 flex flex-wrap items-center justify-between gap-4" style={{ background: BLACK, border: `2px solid ${GREEN}`, opacity: p.active ? 1 : 0.5 }}>
             <div className="flex items-center gap-4">
               <ProductThumb keys={p.imageKeys} fallbackName={p.name} className="w-14 h-14 shrink-0" active={p.active} />
               <div>
                 <div className="font-bold flex items-center gap-2">{p.name} {!p.active && <Badge tone="outline">Inactive</Badge>}</div>
-                <div className="text-xs opacity-60 pc-mono">{p.category} · Min {p.minQty} · {p.tiers.length} tiers</div>
+                <div className="text-xs opacity-60 pc-mono">{p.productCode && <span style={{ color: GREEN }}>{p.productCode}</span>} · {p.category} · Min {p.minQty} · {p.tiers.length} tiers</div>
               </div>
             </div>
             <div className="flex items-center gap-2">
@@ -2058,7 +2239,7 @@ function ProductsAdmin({ products, editingProduct, setEditingProduct, onSaveProd
             </div>
           </div>
         ))}
-        {products.length === 0 && <div className="py-16 text-center opacity-50 text-sm">No products yet — add your first one.</div>}
+        {filteredProducts.length === 0 && <div className="py-16 text-center opacity-50 text-sm">{products.length === 0 ? "No products yet — add your first one." : "No products match that search."}</div>}
       </div>
     </div>
   );
@@ -2297,13 +2478,13 @@ function AdminAccountSettings({ user, onUpdateAdminAccount }) {
   const [success, setSuccess] = useState("");
   const [showPw, setShowPw] = useState(false);
 
-  const submit = () => {
+  const submit = async () => {
     setError(""); setSuccess("");
     if (!currentPassword) return setError("Enter your current password to confirm changes.");
     if (!newEmail.trim() || !newEmail.includes("@")) return setError("Enter a valid email address.");
     if (newPassword && newPassword.length < 6) return setError("New password must be at least 6 characters.");
     if (newPassword && newPassword !== confirmNewPassword) return setError("New passwords don't match.");
-    const res = onUpdateAdminAccount(currentPassword, newEmail, newName, newPassword || null);
+    const res = await onUpdateAdminAccount(currentPassword, newEmail, newName, newPassword || null);
     if (!res.ok) return setError(res.error);
     setCurrentPassword(""); setNewPassword(""); setConfirmNewPassword("");
     setSuccess("Admin account updated. Use the new details next time you sign in.");
@@ -2378,9 +2559,8 @@ export default function App() {
   const [orders, setOrders] = useState([]);
   const [reviews, setReviews] = useState([]);
   const [bank, setBank] = useState(seedBank());
+  const [categories, setCategories] = useState(DEFAULT_CATEGORIES);
   const [notifications, setNotifications] = useState([]);
-  const [accounts, setAccounts] = useState({});
-
   const [user, setUser] = useState(null);
   const [page, setPage] = useState("landing");
   const [pendingReset, setPendingReset] = useState(null);
@@ -2390,46 +2570,34 @@ export default function App() {
   const [lastOrder, setLastOrder] = useState(null);
   const [jumpToOrderId, setJumpToOrderId] = useState(null);
 
-  // initial load
+  // Firestore listeners give every browser the same live data — this is
+  // what makes a product you add show up instantly on your phone too.
   useEffect(() => {
-    (async () => {
-      const [p, o, r, b, n, a] = await Promise.all([
-        loadKey("pc_products", null),
-        loadKey("pc_orders", []),
-        loadKey("pc_reviews", null),
-        loadKey("pc_bank", null),
-        loadKey("pc_notifications", []),
-        loadKey("pc_accounts", null),
-      ]);
-      const initialProducts = p || seedProducts();
-      const initialReviews = r || seedReviews();
-      const initialAccounts = a || {
-        [ADMIN_EMAILS[0]]: { password: obfuscate(ADMIN_DEFAULT_PASSWORD), name: "Studio Admin", role: "admin" },
-      };
-      setProducts(initialProducts);
-      setOrders(o || []);
-      setReviews(initialReviews);
-      setBank(b || seedBank());
-      setNotifications(n || []);
-      setAccounts(initialAccounts);
-      if (!p) saveKey("pc_products", initialProducts);
-      if (!r) saveKey("pc_reviews", initialReviews);
-      if (!b) saveKey("pc_bank", seedBank());
-      if (!a) saveKey("pc_accounts", initialAccounts);
+    ensureSeeded().catch((e) => console.error("seed failed", e));
+
+    const unsubProducts = watchCollection("products", setProducts);
+    const unsubOrders = watchCollection("orders", (items) => setOrders(items.sort((a, b) => a.date - b.date)));
+    const unsubReviews = watchCollection("reviews", (items) => setReviews(items.sort((a, b) => b.date - a.date)));
+    const unsubNotifs = watchCollection("notifications", (items) => setNotifications(items.sort((a, b) => b.timestamp - a.timestamp)));
+    const unsubBank = watchBank((b) => setBank(b || seedBank()));
+    const unsubCategories = watchCategories((c) => setCategories(c.length > 0 ? c : DEFAULT_CATEGORIES));
+
+    const unsubAuth = onAuthStateChanged(auth, async (fbUser) => {
+      if (!fbUser) { setUser(null); setBooted(true); return; }
+      try {
+        const snap = await getDoc(doc(db, "users", fbUser.uid));
+        const profile = snap.exists() ? snap.data() : { email: fbUser.email, name: fbUser.displayName || "", role: "customer" };
+        setUser({ uid: fbUser.uid, email: profile.email || fbUser.email, name: profile.name || fbUser.displayName || "", role: profile.role || "customer" });
+      } catch (e) {
+        setUser({ uid: fbUser.uid, email: fbUser.email, name: fbUser.displayName || "", role: "customer" });
+      }
       setBooted(true);
-    })();
+    });
+
+    return () => { unsubProducts(); unsubOrders(); unsubReviews(); unsubNotifs(); unsubBank(); unsubCategories(); unsubAuth(); };
   }, []);
 
-  // light polling to simulate "real-time" sync across sessions
-  useEffect(() => {
-    if (!booted) return;
-    const iv = setInterval(async () => {
-      const [o, n] = await Promise.all([loadKey("pc_orders", []), loadKey("pc_notifications", [])]);
-      setOrders(o);
-      setNotifications(n);
-    }, 5000);
-    return () => clearInterval(iv);
-  }, [booted]);
+  const handleAddCategory = (name) => addCategoryDoc(categories, name).catch((e) => console.error("add category failed", e));
 
   const nav = (p, opts = {}) => {
     setPage(p);
@@ -2453,127 +2621,106 @@ export default function App() {
   }, [orders]);
 
   /* ---------- actions ---------- */
-  const saveAccounts = (next) => { setAccounts(next); saveKey("pc_accounts", next); };
-
-  const handleSignIn = (emailRaw, password) => {
-    const key = emailRaw.trim().toLowerCase();
-    const acc = accounts[key];
-    if (!acc) return { ok: false, error: "No account found with that email. Try signing up instead." };
-    if (deobfuscate(acc.password) !== password) return { ok: false, error: "Incorrect password." };
-    const u = { email: key, name: acc.name, role: acc.role };
-    setUser(u);
-    nav(acc.role === "admin" ? "admin" : "landing");
-    return { ok: true };
+  const handleSignIn = async (emailRaw, password) => {
+    try {
+      const cred = await fbSignIn(emailRaw.trim().toLowerCase(), password);
+      const snap = await getDoc(doc(db, "users", cred.user.uid));
+      const role = snap.exists() ? snap.data().role : "customer";
+      nav(role === "admin" ? "admin" : "landing");
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: mapAuthError(e) };
+    }
   };
 
-  const handleSignUp = (emailRaw, name, password) => {
+  const handleSignUp = async (emailRaw, name, password) => {
     const key = emailRaw.trim().toLowerCase();
     if (ADMIN_EMAILS.includes(key)) return { ok: false, error: "This email is reserved for admin sign-in." };
-    if (accounts[key]) return { ok: false, error: "An account with that email already exists — try signing in instead." };
-    const newAcc = { password: obfuscate(password), name: name.trim(), role: "customer" };
-    saveAccounts({ ...accounts, [key]: newAcc });
-    const u = { email: key, name: name.trim(), role: "customer" };
-    setUser(u);
-    nav("landing");
-    return { ok: true };
+    try {
+      await fbSignUp(key, name.trim(), password);
+      nav("landing");
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: mapAuthError(e) };
+    }
   };
 
-  // Forgot password: generates a one-time reset link valid for 10 minutes,
-  // and tries to email it via EmailJS (see the config constants near the top
-  // of this file). If EmailJS isn't configured yet, or the send fails, falls
-  // back to showing the link directly on screen (demo mode).
+  // Firebase sends a real password-reset email itself (via its own mail
+  // servers) — no EmailJS involved here, and the link genuinely can't be
+  // faked or guessed since Firebase generates and verifies it server-side.
   const handleRequestReset = async (emailRaw) => {
-    const key = emailRaw.trim().toLowerCase();
-    const acc = accounts[key];
-    if (!acc) return { ok: false, error: "No account found with that email." };
-    const token = generateResetToken();
-    const expiresAt = Date.now() + 10 * 60 * 1000;
-    saveAccounts({ ...accounts, [key]: { ...acc, resetToken: token, resetExpiresAt: expiresAt } });
-    const link = `${window.location.origin}${window.location.pathname}?reset_token=${token}&email=${encodeURIComponent(key)}`;
-
-    const sent = await sendEmailViaEmailJS(EMAILJS_TEMPLATE_ID, {
-      to_email: key,
-      name: acc.name,
-      reset_link: link,
-    });
-
-    return { ok: true, sent, link, token, expiresAt };
+    try {
+      await fbRequestPasswordReset(emailRaw.trim().toLowerCase());
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: mapAuthError(e) };
+    }
   };
 
-  const verifyResetToken = (emailRaw, token) => {
-    const key = emailRaw.trim().toLowerCase();
-    const acc = accounts[key];
-    if (!acc || !acc.resetToken) return false;
-    if (Date.now() > acc.resetExpiresAt) return false;
-    return acc.resetToken === token;
-  };
-
-  // Detect a reset link opened fresh (?reset_token=&email=) once accounts have
-  // loaded, and jump straight to the "set new password" screen if it's valid.
+  // Detect a reset link opened fresh (?mode=resetPassword&oobCode=...) and,
+  // once Firebase confirms the code is genuine and unexpired, jump straight
+  // to the "set new password" screen.
   useEffect(() => {
     if (!booted) return;
     const params = new URLSearchParams(window.location.search);
-    const token = params.get("reset_token");
-    const emailParam = params.get("email");
-    if (token && emailParam && verifyResetToken(emailParam, token)) {
-      setPendingReset({ email: emailParam.trim().toLowerCase(), token });
-      setPage("login");
-      window.history.replaceState({}, "", window.location.pathname);
+    const mode = params.get("mode");
+    const oobCode = params.get("oobCode");
+    if (mode === "resetPassword" && oobCode) {
+      verifyPasswordResetCode(auth, oobCode)
+        .then((verifiedEmail) => {
+          setPendingReset({ email: verifiedEmail, oobCode });
+          setPage("login");
+          window.history.replaceState({}, "", window.location.pathname);
+        })
+        .catch(() => window.history.replaceState({}, "", window.location.pathname));
     }
   }, [booted]);
 
-  const handleResetPassword = (emailRaw, token, newPassword) => {
-    const key = emailRaw.trim().toLowerCase();
-    const acc = accounts[key];
-    if (!acc || !acc.resetToken) return { ok: false, error: "Please request a new reset link first." };
-    if (Date.now() > acc.resetExpiresAt) return { ok: false, error: "This link has expired. Please request a new one." };
-    if (token !== acc.resetToken) return { ok: false, error: "Invalid or already-used reset link." };
-    const { resetToken, resetExpiresAt, ...rest } = acc;
-    saveAccounts({ ...accounts, [key]: { ...rest, password: obfuscate(newPassword) } });
-    return { ok: true };
+  const handleResetPassword = async (oobCode, newPassword) => {
+    try {
+      await fbConfirmPasswordReset(oobCode, newPassword);
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: "This link is invalid or has expired. Please request a new one." };
+    }
   };
 
   // Lets the signed-in admin change their own email/name/password from the dashboard.
-  const handleUpdateAdminAccount = (currentPassword, newEmailRaw, newName, newPassword) => {
-    const key = user.email.trim().toLowerCase();
-    const acc = accounts[key];
-    if (!acc || acc.role !== "admin") return { ok: false, error: "Admin account not found." };
-    if (deobfuscate(acc.password) !== currentPassword) return { ok: false, error: "Current password is incorrect." };
-    const newKey = (newEmailRaw || user.email).trim().toLowerCase();
-    if (newKey !== key && accounts[newKey]) return { ok: false, error: "That email is already in use." };
-    const updatedAcc = {
-      password: newPassword ? obfuscate(newPassword) : acc.password,
-      name: newName?.trim() || acc.name,
-      role: "admin",
-    };
-    const next = { ...accounts };
-    if (newKey !== key) delete next[key];
-    next[newKey] = updatedAcc;
-    saveAccounts(next);
-    setUser((u) => (u ? { ...u, email: newKey, name: updatedAcc.name } : u));
-    return { ok: true, email: newKey };
+  const handleUpdateAdminAccount = async (currentPassword, newEmailRaw, newName, newPassword) => {
+    try {
+      const fbUser = auth.currentUser;
+      const cred = EmailAuthProvider.credential(fbUser.email, currentPassword);
+      await reauthenticateWithCredential(fbUser, cred);
+      const newEmail = (newEmailRaw || user.email).trim().toLowerCase();
+      if (newEmail !== fbUser.email) await updateEmail(fbUser, newEmail);
+      if (newName?.trim()) await updateProfile(fbUser, { displayName: newName.trim() });
+      if (newPassword) await updatePassword(fbUser, newPassword);
+      await saveDoc("users", fbUser.uid, { email: newEmail, name: newName?.trim() || user.name, role: "admin" });
+      setUser((u) => (u ? { ...u, email: newEmail, name: newName?.trim() || u.name } : u));
+      return { ok: true, email: newEmail };
+    } catch (e) {
+      return { ok: false, error: mapAuthError(e) };
+    }
   };
 
-  const handleLogout = () => { setUser(null); nav("landing"); };
+  const handleLogout = async () => { await fbSignOut(); nav("landing"); };
 
   const handleViewProduct = (id) => { setSelectedProductId(id); nav("product"); };
   const handleStartOrder = (draft) => { setOrderDraft(draft); nav(user ? "checkout" : "login"); if (!user) setPage("login"); };
 
-  const saveProducts = (next) => { setProducts(next); saveKey("pc_products", next); };
   const handleSaveProduct = (p) => {
-    const exists = products.some((x) => x.id === p.id);
-    const next = exists ? products.map((x) => (x.id === p.id ? p : x)) : [...products, p];
-    saveProducts(next);
+    const id = p.id || uid("prod");
+    saveDoc("products", id, { ...p, id });
   };
   const handleDeleteProduct = (id) => {
     const p = products.find((x) => x.id === id);
     (p?.imageKeys || []).forEach((k) => idbDeleteImage(k).catch(() => {}));
-    saveProducts(products.filter((x) => x.id !== id));
+    deleteDocById("products", id);
   };
-  const handleToggleProduct = (id) => saveProducts(products.map((p) => (p.id === id ? { ...p, active: !p.active } : p)));
-
-  const saveOrders = (next) => { setOrders(next); saveKey("pc_orders", next); };
-  const saveNotifications = (next) => { setNotifications(next); saveKey("pc_notifications", next); };
+  const handleToggleProduct = (id) => {
+    const p = products.find((x) => x.id === id);
+    if (p) saveDoc("products", id, { ...p, active: !p.active });
+  };
 
   const handlePlaceOrder = async (contact) => {
     const id = "PX-" + Date.now().toString(36).toUpperCase();
@@ -2603,8 +2750,7 @@ export default function App() {
       orderStatus: "New",
       internalNotes: "",
     };
-    const nextOrders = [...orders, order];
-    saveOrders(nextOrders);
+    await saveDoc("orders", id, order);
 
     const notif = {
       id: uid("notif"),
@@ -2613,8 +2759,7 @@ export default function App() {
       read: false,
       timestamp: Date.now(),
     };
-    const nextNotifs = [notif, ...notifications];
-    saveNotifications(nextNotifs);
+    await saveDoc("notifications", notif.id, notif);
 
     // Best-effort real email alert to the studio inbox — order still
     // succeeds even if EmailJS isn't configured or the send fails.
@@ -2635,21 +2780,27 @@ export default function App() {
   };
 
   const handleUpdateOrder = (id, patch) => {
-    const next = orders.map((o) => (o.id === id ? { ...o, ...patch } : o));
-    saveOrders(next);
+    const o = orders.find((x) => x.id === id);
+    if (o) saveDoc("orders", id, { ...o, ...patch });
   };
 
-  const handleSaveBank = (b) => { setBank(b); saveKey("pc_bank", b); };
+  const handleSaveBank = (b) => saveBankDoc(b);
 
-  const saveReviews = (next) => { setReviews(next); saveKey("pc_reviews", next); };
   const handleSubmitReview = ({ customerName, rating, text, product, orderId }) => {
     const rev = { id: uid("rev"), customerName, rating, text, product, orderId, date: Date.now(), approved: false };
-    saveReviews([rev, ...reviews]);
+    saveDoc("reviews", rev.id, rev);
   };
-  const handleSetReviewStatus = (id, approved) => saveReviews(reviews.map((r) => (r.id === id ? { ...r, approved } : r)));
-  const handleDeleteReview = (id) => saveReviews(reviews.filter((r) => r.id !== id));
+  const handleSetReviewStatus = (id, approved) => {
+    const r = reviews.find((x) => x.id === id);
+    if (r) saveDoc("reviews", id, { ...r, approved });
+  };
+  const handleDeleteReview = (id) => deleteDocById("reviews", id);
 
-  const handleMarkNotifRead = (id) => saveNotifications(notifications.map((n) => (n.id === id ? { ...n, read: true } : n)));
+  const handleMarkNotifRead = (id) => {
+    const n = notifications.find((x) => x.id === id);
+    if (n) saveDoc("notifications", id, { ...n, read: true });
+  };
+
   const handleOpenOrderFromNotif = (orderId) => setJumpToOrderId(orderId);
 
   const unreadCount = notifications.filter((n) => !n.read).length;
@@ -2673,7 +2824,7 @@ export default function App() {
 
       <main className="flex-1">
         {page === "landing" && (
-          <Landing products={products} reviews={reviews} onViewProduct={handleViewProduct} onNav={nav} scrollTo={scrollTo} />
+          <Landing products={products} reviews={reviews} categories={categories} onViewProduct={handleViewProduct} onNav={nav} scrollTo={scrollTo} />
         )}
 
         {page === "product" && selectedProduct && (
@@ -2705,6 +2856,8 @@ export default function App() {
           <AdminDashboard
             user={user}
             products={products}
+            categories={categories}
+            onAddCategory={handleAddCategory}
             orders={orders}
             reviews={reviews}
             customers={customers}
