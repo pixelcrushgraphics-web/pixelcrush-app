@@ -178,6 +178,33 @@ async function idbDeleteImage(key) {
   });
 }
 
+/* ---------------- Product image storage (Cloudinary) ----------------
+   Product photos now upload directly to Cloudinary instead of IndexedDB,
+   so a photo uploaded on one device/browser shows up everywhere — the
+   imageKeys array stores real Cloudinary URLs instead of per-browser
+   IndexedDB keys. The idb* helpers above are kept in place (unused) in
+   case any old-format keys still need to be read. */
+const CLOUDINARY_CLOUD_NAME = "jguaxq83";
+const CLOUDINARY_UPLOAD_PRESET = "pixelcrush_unsigned";
+
+async function uploadToCloudinary(file) {
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("upload_preset", CLOUDINARY_UPLOAD_PRESET);
+
+  const response = await fetch(
+    `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/image/upload`,
+    { method: "POST", body: formData }
+  );
+
+  if (!response.ok) {
+    throw new Error("Cloudinary upload failed");
+  }
+
+  const data = await response.json();
+  return data.secure_url; // permanent, cross-device image URL
+}
+
 /* ---------------- Fonts + global chrome ---------------- */
 function GlobalStyle() {
   return (
@@ -529,21 +556,24 @@ function ProductGlyph({ name, active = true, className = "" }) {
   );
 }
 
-// Single cover-image preview (product cards, admin list rows). Loads the
-// first image key from IndexedDB; falls back to the letter-glyph tile if
-// the product has no photos uploaded yet, or if a photo exists but isn't
-// available on this particular browser (photos are per-device for now).
+// Single cover-image preview (product cards, admin list rows). Cloudinary
+// keys are real URLs, so they render directly with no async lookup. Old
+// products that still have a pre-Cloudinary IndexedDB key fall back to the
+// per-browser lookup (and may show the glyph tile on other devices until
+// re-uploaded).
 function ProductThumb({ keys, fallbackName, active = true, className = "" }) {
   const firstKey = keys && keys.length > 0 ? keys[0] : null;
-  const [src, setSrc] = useState(undefined); // undefined = checking, null = confirmed missing
+  const isUrl = !!firstKey && /^https?:\/\//.test(firstKey);
+  const [src, setSrc] = useState(isUrl ? firstKey : undefined); // undefined = checking, null = confirmed missing
 
   useEffect(() => {
     let cancelled = false;
     if (!firstKey) { setSrc(null); return; }
+    if (isUrl) { setSrc(firstKey); return; }
     setSrc(undefined);
     idbGetImage(firstKey).then((data) => { if (!cancelled) setSrc(data || null); }).catch(() => { if (!cancelled) setSrc(null); });
     return () => { cancelled = true; };
-  }, [firstKey]);
+  }, [firstKey, isUrl]);
 
   if (!firstKey || src === null) return <ProductGlyph name={fallbackName} active={active} className={className} />;
   if (src === undefined) return <div className={`${className} pc-mono text-[10px] flex items-center justify-center opacity-40`} style={{ background: BLACK, border: `1px solid ${GREEN}` }}>Loading…</div>;
@@ -560,6 +590,8 @@ function ProductThumb({ keys, fallbackName, active = true, className = "" }) {
 // Full gallery for the product detail page — big preview + clickable
 // thumbnail strip when there's more than one photo. Falls back to the
 // letter-glyph tile if no photos have been uploaded for this product.
+// Cloudinary keys are real URLs and render directly; any leftover
+// pre-Cloudinary IndexedDB keys still get looked up per-browser.
 function ProductGallery({ product }) {
   const keys = product.imageKeys || [];
   const [selected, setSelected] = useState(0);
@@ -573,7 +605,7 @@ function ProductGallery({ product }) {
     (async () => {
       const entries = {};
       for (const k of keys) {
-        entries[k] = await idbGetImage(k).catch(() => null);
+        entries[k] = /^https?:\/\//.test(k) ? k : await idbGetImage(k).catch(() => null);
         if (cancelled) return;
       }
       if (!cancelled) { setSrcs(entries); setLoaded(true); }
@@ -1940,8 +1972,9 @@ function emptyProduct(defaultCategory) {
   };
 }
 // Multi-image upload manager for the admin product editor. Handles
-// compressing each file, saving it to IndexedDB, and keeping the
-// product's imageKeys array in sync. First key = cover photo.
+// uploading each file to Cloudinary and keeping the product's imageKeys
+// array in sync (now storing real Cloudinary URLs instead of IndexedDB
+// keys, so photos show up on every device). First key = cover photo.
 function AdminImageManager({ keys, onChange }) {
   const [srcs, setSrcs] = useState({});
   const [uploading, setUploading] = useState(false);
@@ -1954,7 +1987,7 @@ function AdminImageManager({ keys, onChange }) {
     (async () => {
       const entries = {};
       for (const k of keys) {
-        entries[k] = await idbGetImage(k).catch(() => null);
+        entries[k] = /^https?:\/\//.test(k) ? k : await idbGetImage(k).catch(() => null);
         if (cancelled) return;
       }
       if (!cancelled) setSrcs(entries);
@@ -1976,10 +2009,8 @@ function AdminImageManager({ keys, onChange }) {
           setErr(`Skipped "${file.name}" — over ${MAX_UPLOAD_MB}MB.`);
           continue;
         }
-        const dataUrl = await compressImageFile(file, 1400, 0.8);
-        const key = uid("img");
-        await idbSetImage(key, dataUrl);
-        newKeys.push(key);
+        const url = await uploadToCloudinary(file);
+        newKeys.push(url);
       }
       if (newKeys.length > 0) onChange([...keys, ...newKeys]);
     } catch (e) {
@@ -1990,7 +2021,7 @@ function AdminImageManager({ keys, onChange }) {
   };
 
   const removeImage = async (key) => {
-    idbDeleteImage(key).catch(() => {});
+    if (!/^https?:\/\//.test(key)) idbDeleteImage(key).catch(() => {});
     onChange(keys.filter((k) => k !== key));
   };
   const setCover = (key) => onChange([key, ...keys.filter((k) => k !== key)]);
@@ -2733,7 +2764,10 @@ export default function App() {
   };
   const handleDeleteProduct = (id) => {
     const p = products.find((x) => x.id === id);
-    (p?.imageKeys || []).forEach((k) => idbDeleteImage(k).catch(() => {}));
+    // Cloudinary URLs are left in place (deleting them requires a signed
+    // request, which isn't safe to do from the browser); only clean up
+    // any leftover pre-Cloudinary IndexedDB keys.
+    (p?.imageKeys || []).forEach((k) => { if (!/^https?:\/\//.test(k)) idbDeleteImage(k).catch(() => {}); });
     deleteDocById("products", id);
   };
   const handleToggleProduct = (id) => {
