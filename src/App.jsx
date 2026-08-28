@@ -14,7 +14,7 @@ import {
 import {
   getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword,
   signOut, onAuthStateChanged, sendPasswordResetEmail, updateProfile,
-  updateEmail, updatePassword, EmailAuthProvider, reauthenticateWithCredential,
+  updatePassword, EmailAuthProvider, reauthenticateWithCredential, verifyBeforeUpdateEmail,
   verifyPasswordResetCode, confirmPasswordReset,
 } from "firebase/auth";
 
@@ -2487,7 +2487,12 @@ function AdminAccountSettings({ user, onUpdateAdminAccount }) {
     const res = await onUpdateAdminAccount(currentPassword, newEmail, newName, newPassword || null);
     if (!res.ok) return setError(res.error);
     setCurrentPassword(""); setNewPassword(""); setConfirmNewPassword("");
-    setSuccess("Admin account updated. Use the new details next time you sign in.");
+    setNewEmail(res.email);
+    setSuccess(
+      res.emailChangePending
+        ? `Name/password updated. A confirmation link was also sent to ${newEmail} — click it to finish changing your sign-in email. Until then, keep signing in with ${res.email}.`
+        : "Admin account updated. Use the new details next time you sign in."
+    );
   };
 
   return (
@@ -2685,19 +2690,27 @@ export default function App() {
     }
   };
 
-  // Lets the signed-in admin change their own email/name/password from the dashboard.
+  // Lets the signed-in admin change their own name/password from the dashboard.
+  // Email changes go through Firebase's verify-before-change flow: a link
+  // gets emailed to the NEW address, and the email only actually updates
+  // once that link is clicked — so keep signing in with the OLD email until
+  // then. This is Firebase's current security requirement, not optional.
   const handleUpdateAdminAccount = async (currentPassword, newEmailRaw, newName, newPassword) => {
     try {
       const fbUser = auth.currentUser;
       const cred = EmailAuthProvider.credential(fbUser.email, currentPassword);
       await reauthenticateWithCredential(fbUser, cred);
       const newEmail = (newEmailRaw || user.email).trim().toLowerCase();
-      if (newEmail !== fbUser.email) await updateEmail(fbUser, newEmail);
+      let emailChangePending = false;
+      if (newEmail !== fbUser.email) {
+        await verifyBeforeUpdateEmail(fbUser, newEmail);
+        emailChangePending = true;
+      }
       if (newName?.trim()) await updateProfile(fbUser, { displayName: newName.trim() });
       if (newPassword) await updatePassword(fbUser, newPassword);
-      await saveDoc("users", fbUser.uid, { email: newEmail, name: newName?.trim() || user.name, role: "admin" });
-      setUser((u) => (u ? { ...u, email: newEmail, name: newName?.trim() || u.name } : u));
-      return { ok: true, email: newEmail };
+      await saveDoc("users", fbUser.uid, { email: fbUser.email, name: newName?.trim() || user.name, role: "admin" });
+      setUser((u) => (u ? { ...u, name: newName?.trim() || u.name } : u));
+      return { ok: true, email: fbUser.email, emailChangePending };
     } catch (e) {
       return { ok: false, error: mapAuthError(e) };
     }
