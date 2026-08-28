@@ -247,6 +247,12 @@ function GlobalStyle() {
       @keyframes pc-pulse-glow { 0%, 100% { opacity: 0.5; } 50% { opacity: 1; } }
       .pc-pulse { animation: pc-pulse-glow 2.4s ease-in-out infinite; }
       @keyframes pc-scanline { 0% { transform: translateY(-100%); } 100% { transform: translateY(100%); } }
+      @keyframes pc-neon-flicker {
+        0%, 18%, 22%, 25%, 53%, 57%, 100% { opacity: 1; text-shadow: 0 0 8px currentColor, 0 0 22px rgba(117,252,8,0.75), 0 0 46px rgba(117,252,8,0.5); }
+        20%, 24%, 55% { opacity: 0.35; text-shadow: none; }
+      }
+      .pc-neon-word { animation: pc-neon-flicker 4.5s infinite; }
+      .pc-neon-word.pc-neon-delay { animation-delay: 0.4s; }
       .pc-hex-grid { background-image: repeating-linear-gradient(120deg, rgba(117,252,8,0.06) 0px, rgba(117,252,8,0.06) 1px, transparent 1px, transparent 46px), repeating-linear-gradient(60deg, rgba(117,252,8,0.06) 0px, rgba(117,252,8,0.06) 1px, transparent 1px, transparent 46px); }
       input:focus, textarea:focus, select:focus { outline: 2px solid ${GREEN}; outline-offset: 1px; }
       button:focus-visible, a:focus-visible { outline: 2px solid ${GREEN}; outline-offset: 2px; }
@@ -697,7 +703,7 @@ function IntroScreen({ onDone }) {
   }, [onDone]);
 
   useEffect(() => {
-    const t = setTimeout(finish, 9000); // hard safety timeout
+    const t = setTimeout(finish, 1000); // keep the intro brief — about 1 second
     return () => clearTimeout(t);
   }, [finish]);
 
@@ -911,13 +917,23 @@ function Landing({ products, reviews, categories, onViewProduct, onNav, scrollTo
           className="absolute inset-0 opacity-20"
           style={{ backgroundImage: `repeating-linear-gradient(115deg, ${GREEN} 0px, ${GREEN} 1px, transparent 1px, transparent 40px)` }}
         />
-        <img
-          src={LOGO_SRC}
-          alt=""
+        {/* Decorative watermark — built from real text + an SVG hexagon (not a raster image),
+            so it stays crisp, centers cleanly, and scales correctly on every screen size. */}
+        <div
+          className="absolute inset-0 flex items-center justify-center md:justify-end pointer-events-none select-none px-6"
           aria-hidden="true"
-          className="absolute pointer-events-none select-none"
-          style={{ top: "50%", right: "-6%", transform: "translateY(-50%)", width: "min(52vw, 620px)", opacity: 0.28, filter: "drop-shadow(0 0 60px rgba(117,252,8,0.6))" }}
-        />
+        >
+          <div className="relative flex items-center justify-center" style={{ width: "min(78vw, 460px)", opacity: 0.3 }}>
+            <svg viewBox="0 0 200 200" className="w-full h-auto" style={{ filter: "drop-shadow(0 0 50px rgba(117,252,8,0.55))" }}>
+              <polygon points="100,8 184,54 184,146 100,192 16,146 16,54" fill="none" stroke={GREEN} strokeWidth="2.5" />
+              <polygon points="100,34 158,67 158,133 100,166 42,133 42,67" fill="none" stroke={GREEN} strokeWidth="1.25" opacity="0.55" />
+            </svg>
+            <div className="absolute inset-0 flex flex-col items-center justify-center text-center pc-display font-black leading-[0.9]">
+              <span className="pc-neon-word" style={{ color: WHITE, fontSize: "clamp(1.25rem, 6vw, 2.75rem)" }}>PIXEL</span>
+              <span className="pc-neon-word pc-neon-delay" style={{ color: GREEN, fontSize: "clamp(1.25rem, 6vw, 2.75rem)" }}>CRUSH</span>
+            </div>
+          </div>
+        </div>
         <div className="relative max-w-7xl mx-auto px-5 md:px-8 pt-20 pb-24 md:pt-28 md:pb-32">
           <div className="pc-mono flex items-center gap-2 text-xs font-bold uppercase tracking-[0.3em] mb-6" style={{ color: GREEN }}>
             <span className="pc-pulse">●</span> Design · Print · Digital — Colombo, LK
