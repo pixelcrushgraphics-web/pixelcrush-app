@@ -1202,21 +1202,39 @@ function ProductPage({ product, onBack, onStartOrder }) {
 
             {product.availableColors?.length > 0 && (
               <div className="mb-4">
-                <div className="text-xs opacity-60 mb-2">Available for this product — click to preview & select:</div>
+                <div className="text-xs opacity-60 mb-2">Click a swatch to preview that colour's photo. Use the + to actually add it to your order.</div>
                 <div className="flex flex-wrap gap-2">
                   {product.availableColors.map((c) => {
                     const active = colors.includes(c.hex);
+                    const previewing = activeGalleryColor === c.hex;
                     return (
-                      <button
-                        key={c.hex}
-                        onClick={() => { (active ? removeColor(colors.indexOf(c.hex)) : addSwatch(c.hex)); setActiveGalleryColor(c.hex); }}
-                        title={`${c.name} (${c.hex})`}
-                        className="pc-btn flex items-center gap-2 px-3 py-2 text-xs font-bold"
-                        style={{ border: `2px solid ${active ? GREEN : WHITE}`, background: active ? "rgba(117,252,8,0.1)" : "transparent" }}
-                      >
-                        <span style={{ width: 16, height: 16, background: c.hex, border: `1px solid ${WHITE}`, display: "inline-block" }} />
-                        {c.name}
-                      </button>
+                      <div key={c.hex} className="flex items-stretch">
+                        <button
+                          onClick={() => setActiveGalleryColor(c.hex)}
+                          title={`Preview ${c.name} (${c.hex})`}
+                          className="pc-btn flex items-center gap-2 px-3 py-2 text-xs font-bold"
+                          style={{
+                            border: `2px solid ${previewing ? GREEN : WHITE}`,
+                            borderRight: "none",
+                            background: previewing ? "rgba(117,252,8,0.1)" : "transparent",
+                          }}
+                        >
+                          <span style={{ width: 16, height: 16, background: c.hex, border: `1px solid ${WHITE}`, display: "inline-block" }} />
+                          {c.name}
+                        </button>
+                        <button
+                          onClick={() => (active ? removeColor(colors.indexOf(c.hex)) : addSwatch(c.hex))}
+                          title={active ? `Remove ${c.name} from your order` : `Add ${c.name} to your order`}
+                          className="pc-btn flex items-center justify-center px-2.5"
+                          style={{
+                            border: `2px solid ${active ? GREEN : WHITE}`,
+                            background: active ? GREEN : "transparent",
+                            color: active ? BLACK : WHITE,
+                          }}
+                        >
+                          {active ? <Check size={13} /> : <PlusCircle size={13} />}
+                        </button>
+                      </div>
                     );
                   })}
                 </div>
