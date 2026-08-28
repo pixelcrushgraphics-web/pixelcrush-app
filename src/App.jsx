@@ -531,20 +531,22 @@ function ProductGlyph({ name, active = true, className = "" }) {
 
 // Single cover-image preview (product cards, admin list rows). Loads the
 // first image key from IndexedDB; falls back to the letter-glyph tile if
-// the product has no photos uploaded yet.
+// the product has no photos uploaded yet, or if a photo exists but isn't
+// available on this particular browser (photos are per-device for now).
 function ProductThumb({ keys, fallbackName, active = true, className = "" }) {
   const firstKey = keys && keys.length > 0 ? keys[0] : null;
-  const [src, setSrc] = useState(null);
+  const [src, setSrc] = useState(undefined); // undefined = checking, null = confirmed missing
 
   useEffect(() => {
     let cancelled = false;
     if (!firstKey) { setSrc(null); return; }
-    idbGetImage(firstKey).then((data) => { if (!cancelled) setSrc(data); }).catch(() => {});
+    setSrc(undefined);
+    idbGetImage(firstKey).then((data) => { if (!cancelled) setSrc(data || null); }).catch(() => { if (!cancelled) setSrc(null); });
     return () => { cancelled = true; };
   }, [firstKey]);
 
-  if (!firstKey) return <ProductGlyph name={fallbackName} active={active} className={className} />;
-  if (!src) return <div className={`${className} pc-mono text-[10px] flex items-center justify-center opacity-40`} style={{ background: BLACK, border: `1px solid ${GREEN}` }}>Loading…</div>;
+  if (!firstKey || src === null) return <ProductGlyph name={fallbackName} active={active} className={className} />;
+  if (src === undefined) return <div className={`${className} pc-mono text-[10px] flex items-center justify-center opacity-40`} style={{ background: BLACK, border: `1px solid ${GREEN}` }}>Loading…</div>;
   return (
     <img
       src={src}
@@ -562,17 +564,19 @@ function ProductGallery({ product }) {
   const keys = product.imageKeys || [];
   const [selected, setSelected] = useState(0);
   const [srcs, setSrcs] = useState({});
+  const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     setSelected(0);
+    setLoaded(false);
     (async () => {
       const entries = {};
       for (const k of keys) {
         entries[k] = await idbGetImage(k).catch(() => null);
         if (cancelled) return;
       }
-      if (!cancelled) setSrcs(entries);
+      if (!cancelled) { setSrcs(entries); setLoaded(true); }
     })();
     return () => { cancelled = true; };
   }, [keys.join(",")]);
@@ -585,9 +589,11 @@ function ProductGallery({ product }) {
 
   return (
     <div>
-      <div className="w-full aspect-square overflow-hidden flex items-center justify-center" style={{ background: BLACK, border: `1px solid ${GREEN}` }}>
+      <div className="w-full aspect-square overflow-hidden flex items-center justify-center text-center" style={{ background: BLACK, border: `1px solid ${GREEN}` }}>
         {mainSrc ? (
           <img src={mainSrc} alt={product.name} className="max-w-full max-h-full object-contain" />
+        ) : loaded ? (
+          <span className="pc-mono text-xs opacity-40 px-6">Photo not available on this device yet — it was uploaded from a different browser.</span>
         ) : (
           <span className="pc-mono text-xs opacity-40">Loading…</span>
         )}
