@@ -445,10 +445,10 @@ const seedReviews = () => [
 ];
 
 const seedBank = () => ({
-  bankName: "Commercial Bank",
+  bankName: "Commercial Bank of Ceylon",
   accountHolder: "Pixel Crush (Pvt) Ltd",
-  accountNumber: "85 900 50961",
-  branch: "Moratuwa",
+  accountNumber: "8001 2345 6789",
+  branch: "Colombo 03",
   instructions: "Please use your Order ID as the payment reference and share the slip on WhatsApp for faster confirmation.",
   instagramUrl: "",
   facebookUrl: "",
@@ -736,15 +736,6 @@ function IntroScreen({ onDone }) {
       </div>
       <div className="absolute top-8 left-0 right-0 flex items-center justify-center gap-2 pc-mono text-[11px] font-bold uppercase tracking-[0.3em]" style={{ color: GREEN }}>
         <span className="pc-pulse">●</span> Pixel Crush Studio
-      </div>
-      <div className="absolute bottom-8 left-0 right-0 flex items-center justify-center gap-3">
-        <button
-          onClick={finish}
-          className="pc-btn pc-glow-btn flex items-center gap-2 px-5 py-2.5 text-xs font-bold pc-mono uppercase"
-          style={{ background: GREEN, color: BLACK, border: `2px solid ${BLACK}` }}
-        >
-          Skip Intro <ArrowRight size={14} />
-        </button>
       </div>
     </div>
   );
