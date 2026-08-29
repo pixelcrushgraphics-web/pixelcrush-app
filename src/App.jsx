@@ -77,8 +77,17 @@ async function sendEmailViaEmailJS(templateId, templateParams) {
         template_params: templateParams,
       }),
     });
+    if (!res.ok) {
+      // Surface the real reason in the console (e.g. wrong template ID,
+      // disconnected email service, quota exceeded, domain not allowed)
+      // instead of failing completely silently — this doesn't affect the
+      // customer's order, it just makes the failure debuggable for admins.
+      const body = await res.text().catch(() => "");
+      console.error("EmailJS order-notification send failed:", res.status, body);
+    }
     return res.ok;
   } catch (e) {
+    console.error("EmailJS order-notification send threw an error:", e);
     return false;
   }
 }
