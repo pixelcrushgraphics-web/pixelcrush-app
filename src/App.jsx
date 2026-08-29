@@ -445,10 +445,10 @@ const seedReviews = () => [
 ];
 
 const seedBank = () => ({
-  bankName: "Commercial Bank of Ceylon",
+  bankName: "Commercial Bank",
   accountHolder: "Pixel Crush (Pvt) Ltd",
-  accountNumber: "8001 2345 6789",
-  branch: "Colombo 03",
+  accountNumber: "85 900 50961",
+  branch: "Moratuwa",
   instructions: "Please use your Order ID as the payment reference and share the slip on WhatsApp for faster confirmation.",
   instagramUrl: "",
   facebookUrl: "",
