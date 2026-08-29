@@ -461,6 +461,9 @@ const seedBank = () => ({
   instructions: "Please use your Order ID as the payment reference and share the slip on WhatsApp for faster confirmation.",
   instagramUrl: "",
   facebookUrl: "",
+  contactPhone: "",
+  contactEmail: "",
+  contactAddress: "",
 });
 
 const DEFAULT_CATEGORIES = ["Business Cards", "Marketing Materials", "Printing", "Digital Designs", "Invitations", "Brochures"];
@@ -841,9 +844,12 @@ function Footer({ onNav, bank }) {
         <div>
           <h4 className="pc-mono text-xs font-bold uppercase tracking-wider mb-4" style={{ color: GREEN }}>Contact</h4>
           <ul className="space-y-2.5 text-sm opacity-80">
-            <li className="flex items-center gap-2"><Phone size={14} /> +94 77 123 4567</li>
-            <li className="flex items-center gap-2"><Mail size={14} /> hello@pixelcrush.lk</li>
-            <li className="flex items-center gap-2"><MapPin size={14} /> Colombo, Sri Lanka</li>
+            {bank.contactPhone && <li className="flex items-center gap-2"><Phone size={14} /> {bank.contactPhone}</li>}
+            {bank.contactEmail && <li className="flex items-center gap-2"><Mail size={14} /> {bank.contactEmail}</li>}
+            {bank.contactAddress && <li className="flex items-center gap-2"><MapPin size={14} /> {bank.contactAddress}</li>}
+            {!bank.contactPhone && !bank.contactEmail && !bank.contactAddress && (
+              <li className="opacity-50">Set your contact details in Admin → Bank & Social.</li>
+            )}
           </ul>
         </div>
         <div>
@@ -1857,9 +1863,9 @@ function CustomerDashboard({ user, orders, onNav, onSubmitReview }) {
 function AdminDashboard({
   user, products, categories, onAddCategory, orders, reviews, customers, bank, notifications,
   onSaveProduct, onDeleteProduct, onToggleProduct,
-  onUpdateOrder, onSaveBank,
+  onUpdateOrder, onDeleteOrder, onSaveBank,
   onSetReviewStatus, onDeleteReview,
-  onMarkNotifRead, onOpenOrderFromNotif,
+  onMarkNotifRead, onDeleteNotif, onDeleteAllNotifs, onOpenOrderFromNotif,
   onUpdateAdminAccount,
   jumpToOrderId, clearJump,
 }) {
@@ -2000,6 +2006,7 @@ function AdminDashboard({
           openOrder={openOrder}
           setOpenOrderId={setOpenOrderId}
           onUpdateOrder={onUpdateOrder}
+          onDeleteOrder={onDeleteOrder}
         />
       )}
 
@@ -2012,23 +2019,45 @@ function AdminDashboard({
       {tab === "notifications" && (
         <div className="space-y-2 max-w-2xl">
           {notifications.length === 0 && <div className="text-sm opacity-50 pc-mono">No notifications yet.</div>}
+          {notifications.length > 0 && (
+            <div className="flex justify-end mb-2">
+              <button
+                onClick={() => { if (confirm("Clear all notifications? This can't be undone.")) onDeleteAllNotifs(); }}
+                className="pc-mono text-xs font-bold uppercase pc-underline opacity-70"
+              >
+                Clear all
+              </button>
+            </div>
+          )}
           {notifications.slice().sort((a, b) => b.timestamp - a.timestamp).map((n) => (
-            <button
+            <div
               key={n.id}
-              onClick={() => { onMarkNotifRead(n.id); onOpenOrderFromNotif(n.orderId); }}
-              className="w-full text-left p-4 flex items-start gap-3 pc-btn"
+              className="w-full text-left p-4 flex items-start gap-3"
               style={{
                 border: `1.5px solid ${n.read ? WHITE : GREEN}`,
                 background: n.read ? BLACK : "rgba(117,252,8,0.08)",
                 boxShadow: n.read ? "none" : `0 0 20px rgba(117,252,8,0.2)`,
               }}
             >
-              <div className="mt-1" style={{ width: 8, height: 8, borderRadius: "50%", background: n.read ? "#666" : GREEN, flexShrink: 0 }} />
-              <div>
-                <div className="text-sm font-semibold whitespace-pre-line">{n.message}</div>
-                <div className="text-[11px] opacity-50 mt-1 pc-mono">{fmtDate(n.timestamp)}</div>
-              </div>
-            </button>
+              <button
+                onClick={() => { onMarkNotifRead(n.id); onOpenOrderFromNotif(n.orderId); }}
+                className="flex items-start gap-3 flex-1 text-left pc-btn"
+              >
+                <div className="mt-1" style={{ width: 8, height: 8, borderRadius: "50%", background: n.read ? "#666" : GREEN, flexShrink: 0 }} />
+                <div>
+                  <div className="text-sm font-semibold whitespace-pre-line">{n.message}</div>
+                  <div className="text-[11px] opacity-50 mt-1 pc-mono">{fmtDate(n.timestamp)}</div>
+                </div>
+              </button>
+              <button
+                onClick={() => onDeleteNotif(n.id)}
+                className="pc-btn p-1.5 shrink-0"
+                style={{ border: `1px solid ${WHITE}`, color: WHITE }}
+                title="Delete notification"
+              >
+                <Trash2 size={12} />
+              </button>
+            </div>
           ))}
         </div>
       )}
@@ -2396,14 +2425,23 @@ function ProductsAdmin({ products, categories, onAddCategory, editingProduct, se
 }
 
 /* ---- Admin: Orders ---- */
-function OrdersAdmin({ orders, filters, setFilters, openOrder, setOpenOrderId, onUpdateOrder }) {
+function OrdersAdmin({ orders, filters, setFilters, openOrder, setOpenOrderId, onUpdateOrder, onDeleteOrder }) {
   if (openOrder) {
     const o = openOrder;
     return (
       <div className="max-w-3xl">
-        <button onClick={() => setOpenOrderId(null)} className="pc-mono flex items-center gap-2 text-xs font-bold uppercase mb-6 pc-underline">
-          <ArrowLeft size={14} /> All orders
-        </button>
+        <div className="flex items-center justify-between mb-6">
+          <button onClick={() => setOpenOrderId(null)} className="pc-mono flex items-center gap-2 text-xs font-bold uppercase pc-underline">
+            <ArrowLeft size={14} /> All orders
+          </button>
+          <button
+            onClick={() => { if (confirm(`Delete order ${o.id}? This can't be undone.`)) { onDeleteOrder(o.id); setOpenOrderId(null); } }}
+            className="pc-btn flex items-center gap-2 px-3 py-2 text-xs font-bold"
+            style={{ border: `2px solid ${WHITE}`, color: WHITE }}
+          >
+            <Trash2 size={13} /> Delete Order
+          </button>
+        </div>
         <div className="flex items-center justify-between flex-wrap gap-3 mb-6">
           <div>
             <div className="pc-mono text-xs opacity-60">{o.id}</div>
@@ -2523,7 +2561,7 @@ function OrdersAdmin({ orders, filters, setFilters, openOrder, setOpenOrderId, o
         <table className="w-full text-sm min-w-[720px]">
           <thead>
             <tr className="pc-mono text-[11px] uppercase tracking-wider text-left" style={{ borderBottom: `2px solid ${GREEN}` }}>
-              <th className="py-3 pr-4">Order</th><th className="py-3 pr-4">Customer</th><th className="py-3 pr-4">Total</th><th className="py-3 pr-4">Status</th><th className="py-3 pr-4">Payment</th><th className="py-3"></th>
+              <th className="py-3 pr-4">Order</th><th className="py-3 pr-4">Customer</th><th className="py-3 pr-4">Total</th><th className="py-3 pr-4">Status</th><th className="py-3 pr-4">Payment</th><th className="py-3"></th><th className="py-3"></th>
             </tr>
           </thead>
           <tbody>
@@ -2535,6 +2573,16 @@ function OrdersAdmin({ orders, filters, setFilters, openOrder, setOpenOrderId, o
                 <td className="py-3 pr-4"><Badge>{o.orderStatus}</Badge></td>
                 <td className="py-3 pr-4"><Badge tone="outline">{o.paymentStatus}</Badge></td>
                 <td className="py-3"><button onClick={() => setOpenOrderId(o.id)} className="pc-underline font-bold text-xs pc-mono uppercase">Open</button></td>
+                <td className="py-3">
+                  <button
+                    onClick={() => { if (confirm(`Delete order ${o.id}? This can't be undone.`)) onDeleteOrder(o.id); }}
+                    className="pc-btn p-1.5"
+                    style={{ border: `1px solid ${WHITE}`, color: WHITE }}
+                    title="Delete order"
+                  >
+                    <Trash2 size={12} />
+                  </button>
+                </td>
               </tr>
             ))}
           </tbody>
@@ -2696,6 +2744,20 @@ function BankAdmin({ bank, onSaveBank }) {
       <div><FieldLabel required>Account Number</FieldLabel><TextInput value={form.accountNumber} onChange={(e) => setForm((f) => ({ ...f, accountNumber: e.target.value }))} /></div>
       <div><FieldLabel required>Branch</FieldLabel><TextInput value={form.branch} onChange={(e) => setForm((f) => ({ ...f, branch: e.target.value }))} /></div>
       <div><FieldLabel required={false}>Payment Instructions</FieldLabel><TextArea rows={3} value={form.instructions} onChange={(e) => setForm((f) => ({ ...f, instructions: e.target.value }))} /></div>
+
+      <div className="pt-2" style={{ borderTop: `1px solid rgba(255,255,255,0.15)` }}>
+        <FieldLabel required={false}>Contact Phone</FieldLabel>
+        <TextInput placeholder="+94 77 123 4567" value={form.contactPhone || ""} onChange={(e) => setForm((f) => ({ ...f, contactPhone: e.target.value }))} />
+      </div>
+      <div>
+        <FieldLabel required={false}>Contact Email</FieldLabel>
+        <TextInput placeholder="hello@pixelcrush.lk" value={form.contactEmail || ""} onChange={(e) => setForm((f) => ({ ...f, contactEmail: e.target.value }))} />
+      </div>
+      <div>
+        <FieldLabel required={false}>Contact Address</FieldLabel>
+        <TextInput placeholder="Colombo, Sri Lanka" value={form.contactAddress || ""} onChange={(e) => setForm((f) => ({ ...f, contactAddress: e.target.value }))} />
+      </div>
+      <p className="text-xs opacity-50">These show in the site footer's Contact section. Leave a field blank to hide that line.</p>
 
       <div className="pt-2" style={{ borderTop: `1px solid rgba(255,255,255,0.15)` }}>
         <FieldLabel required={false}>Instagram URL</FieldLabel>
@@ -2960,6 +3022,7 @@ export default function App() {
     const o = orders.find((x) => x.id === id);
     if (o) saveDoc("orders", id, { ...o, ...patch });
   };
+  const handleDeleteOrder = (id) => deleteDocById("orders", id);
 
   const handleSaveBank = (b) => saveBankDoc(b);
 
@@ -2977,6 +3040,8 @@ export default function App() {
     const n = notifications.find((x) => x.id === id);
     if (n) saveDoc("notifications", id, { ...n, read: true });
   };
+  const handleDeleteNotif = (id) => deleteDocById("notifications", id);
+  const handleDeleteAllNotifs = () => notifications.forEach((n) => deleteDocById("notifications", n.id));
 
   const handleOpenOrderFromNotif = (orderId) => setJumpToOrderId(orderId);
 
@@ -3044,10 +3109,13 @@ export default function App() {
             onDeleteProduct={handleDeleteProduct}
             onToggleProduct={handleToggleProduct}
             onUpdateOrder={handleUpdateOrder}
+            onDeleteOrder={handleDeleteOrder}
             onSaveBank={handleSaveBank}
             onSetReviewStatus={handleSetReviewStatus}
             onDeleteReview={handleDeleteReview}
             onMarkNotifRead={handleMarkNotifRead}
+            onDeleteNotif={handleDeleteNotif}
+            onDeleteAllNotifs={handleDeleteAllNotifs}
             onOpenOrderFromNotif={handleOpenOrderFromNotif}
             onUpdateAdminAccount={handleUpdateAdminAccount}
             jumpToOrderId={jumpToOrderId}
