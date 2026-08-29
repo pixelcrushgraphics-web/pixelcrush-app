@@ -5,8 +5,9 @@ import {
   LayoutDashboard, Trash2, Pencil, Eye, EyeOff, ArrowLeft, ArrowRight,
   Phone, Mail, MapPin, Instagram, Facebook, PlusCircle, XCircle,
   CheckCircle2, Clock, AlertCircle, Filter, ChevronDown, Volume2, VolumeX, Settings, KeyRound,
-  Upload, FileText, Image as ImageIcon
+  Upload, FileText, Image as ImageIcon, MessageCircle, Download
 } from "lucide-react";
+import jsPDF from "jspdf";
 import { initializeApp } from "firebase/app";
 import {
   getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, getDoc,
@@ -212,6 +213,209 @@ async function uploadToCloudinary(file) {
 
   const data = await response.json();
   return data.secure_url; // permanent, cross-device image URL
+}
+
+// Uploads a generated PDF (as a Blob) to Cloudinary's raw-file endpoint,
+// reusing the same unsigned preset as product photos. Used for order
+// invoices — gives us a permanent, shareable download link we can put
+// straight into emails and the order-confirmation screen.
+async function uploadPdfToCloudinary(blob, filename) {
+  const formData = new FormData();
+  formData.append("file", blob, filename);
+  formData.append("upload_preset", CLOUDINARY_UPLOAD_PRESET);
+
+  const response = await fetch(
+    `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/raw/upload`,
+    { method: "POST", body: formData }
+  );
+
+  if (!response.ok) {
+    throw new Error("Cloudinary PDF upload failed");
+  }
+
+  const data = await response.json();
+  return data.secure_url;
+}
+
+function hexToRgb(hex) {
+  const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec((hex || "").trim());
+  return m ? [parseInt(m[1], 16), parseInt(m[2], 16), parseInt(m[3], 16)] : [150, 150, 150];
+}
+
+// Builds the order invoice as a compact 2in × 6in receipt-style PDF —
+// professional enough to be a real business document, with just enough
+// of the site's neon-on-black brand identity (green accent rules, a
+// monospace order-ID line) to feel like it belongs to Pixel Crush.
+// Every optional section is capped to a safe number of lines so the
+// content always fits the fixed page size, however long an order gets.
+function generateInvoicePdf(order, product, bank) {
+  const W = 2, H = 6, M = 0.12, CW = W - M * 2;
+  const GREEN = [117, 252, 8];
+  const GRAY = [120, 120, 120];
+  const doc = new jsPDF({ unit: "in", format: [W, H] });
+  let y = 0;
+
+  const divider = () => {
+    doc.setDrawColor(180, 180, 180);
+    doc.setLineWidth(0.006);
+    doc.setLineDashPattern([0.02, 0.02], 0);
+    doc.line(M, y, W - M, y);
+    doc.setLineDashPattern([], 0);
+    y += 0.13;
+  };
+  const label = (text) => {
+    doc.setFont("courier", "bold");
+    doc.setFontSize(6.2);
+    doc.setTextColor(...GREEN);
+    doc.text(text.toUpperCase(), M, y);
+    y += 0.115;
+  };
+  const wrapLines = (text, size, font = "helvetica", style = "normal", max = 99) => {
+    doc.setFont(font, style);
+    doc.setFontSize(size);
+    const lines = doc.splitTextToSize(String(text), CW).slice(0, max);
+    lines.forEach((l) => { doc.text(l, M, y); y += size >= 8 ? 0.13 : 0.105; });
+  };
+
+  // Header band
+  doc.setFillColor(10, 10, 10);
+  doc.rect(0, 0, W, 0.52, "F");
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(12);
+  doc.setTextColor(255, 255, 255);
+  doc.text("PIXEL", M, 0.22);
+  doc.setTextColor(...GREEN);
+  doc.text("CRUSH", M + doc.getTextWidth("PIXEL "), 0.22);
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(5.4);
+  doc.setTextColor(200, 200, 200);
+  doc.text("DESIGN & PRINT STUDIO", M, 0.35);
+  doc.setDrawColor(...GREEN);
+  doc.setLineWidth(0.02);
+  doc.line(0, 0.52, W, 0.52);
+
+  y = 0.68;
+  doc.setFont("courier", "bold");
+  doc.setFontSize(7.5);
+  doc.setTextColor(0, 0, 0);
+  doc.text(order.id, M, y);
+  y += 0.12;
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(6);
+  doc.setTextColor(...GRAY);
+  doc.text(new Date(order.date).toLocaleString("en-LK", { dateStyle: "medium", timeStyle: "short" }), M, y);
+  y += 0.16;
+  divider();
+
+  // Bill to
+  label("Bill To");
+  doc.setTextColor(0, 0, 0);
+  wrapLines(order.customerName, 6.8, "helvetica", "bold", 2);
+  wrapLines(order.phone, 6.2, "helvetica", "normal", 1);
+  wrapLines(order.email, 6.2, "helvetica", "normal", 2);
+  if (order.address) wrapLines(order.address, 6.2, "helvetica", "normal", 2);
+  y += 0.04;
+  divider();
+
+  // Order details
+  label("Order");
+  doc.setTextColor(0, 0, 0);
+  wrapLines(order.product, 7.2, "helvetica", "bold", 2);
+  doc.setTextColor(...GRAY);
+  wrapLines(`Qty: ${order.qty}`, 6.2, "helvetica", "normal", 1);
+
+  if (order.colors?.length > 0) {
+    y += 0.02;
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(6.2);
+    doc.setTextColor(0, 0, 0);
+    doc.text("Colour(s):", M, y);
+    y += 0.115;
+    const shown = order.colors.slice(0, 5);
+    shown.forEach((hex) => {
+      const known = product?.availableColors?.find((c) => c.hex.toLowerCase() === hex.toLowerCase());
+      doc.setFillColor(...hexToRgb(hex));
+      doc.rect(M, y - 0.07, 0.08, 0.08, "F");
+      doc.setDrawColor(0, 0, 0);
+      doc.setLineWidth(0.004);
+      doc.rect(M, y - 0.07, 0.08, 0.08);
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(6);
+      doc.setTextColor(0, 0, 0);
+      const txt = known ? `${known.name} (${hex.toUpperCase()})` : hex.toUpperCase();
+      doc.text(doc.splitTextToSize(txt, CW - 0.16)[0] || txt, M + 0.13, y);
+      y += 0.115;
+    });
+    if (order.colors.length > shown.length) {
+      doc.setTextColor(...GRAY);
+      doc.text(`+${order.colors.length - shown.length} more`, M, y);
+      y += 0.11;
+    }
+  }
+  if (order.colorNotes) {
+    doc.setTextColor(...GRAY);
+    wrapLines(order.colorNotes, 6, "helvetica", "italic", 2);
+  }
+
+  if (order.fieldDefs?.length > 0) {
+    const withValues = order.fieldDefs.filter((f) => order.fieldValues?.[f.id]);
+    withValues.slice(0, 4).forEach((f) => {
+      y += 0.02;
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(6);
+      doc.setTextColor(0, 0, 0);
+      doc.text(`${f.label}:`, M, y);
+      y += 0.105;
+      doc.setTextColor(...GRAY);
+      wrapLines(order.fieldValues[f.id], 6, "helvetica", "normal", 2);
+    });
+  }
+
+  if (order.additionalNotes) {
+    y += 0.02;
+    label("Notes");
+    doc.setTextColor(...GRAY);
+    wrapLines(order.additionalNotes, 6, "helvetica", "italic", 3);
+  }
+
+  y += 0.03;
+  divider();
+
+  // Total
+  doc.setFont("courier", "bold");
+  doc.setFontSize(9);
+  doc.setTextColor(...GREEN);
+  doc.text("TOTAL", M, y);
+  const totalText = order.negotiable ? "TBC" : fmtLKR(order.total);
+  doc.text(totalText, W - M - doc.getTextWidth(totalText), y);
+  y += 0.17;
+
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(6.2);
+  doc.setTextColor(0, 0, 0);
+  doc.text(`Payment: ${order.paymentStatus}`, M, y);
+  y += 0.11;
+  if (order.paymentRef) {
+    doc.setTextColor(...GRAY);
+    wrapLines(`Ref: ${order.paymentRef}`, 6, "helvetica", "normal", 1);
+  }
+
+  y = Math.max(y + 0.05, H - 0.62); // anchor footer near the bottom so short receipts don't trail off into empty space
+  divider();
+
+  // Footer
+  doc.setFont("helvetica", "italic");
+  doc.setFontSize(6);
+  doc.setTextColor(...GRAY);
+  wrapLines("Thank you for choosing Pixel Crush!", 6, "helvetica", "italic", 2);
+  doc.setFont("helvetica", "normal");
+  if (bank?.contactPhone) wrapLines(bank.contactPhone, 6, "helvetica", "normal", 1);
+  if (bank?.contactEmail) wrapLines(bank.contactEmail, 6, "helvetica", "normal", 1);
+
+  doc.setFillColor(...GREEN);
+  doc.rect(0, H - 0.05, W, 0.05, "F");
+
+  return doc;
 }
 
 // Each product image can be stored as either a plain string (a legacy
@@ -461,6 +665,7 @@ const seedBank = () => ({
   instructions: "Please use your Order ID as the payment reference and share the slip on WhatsApp for faster confirmation.",
   instagramUrl: "",
   facebookUrl: "",
+  whatsappNumber: "",
   contactPhone: "",
   contactEmail: "",
   contactAddress: "",
@@ -820,6 +1025,32 @@ function Header({ user, onNav, onLogout, unread, page }) {
         </div>
       )}
     </header>
+  );
+}
+
+// Floating "chat on WhatsApp" button — shown on every customer-facing page
+// once the admin has set a business WhatsApp number. Opens a prefilled
+// chat in a new tab so customers can reach the studio directly.
+function WhatsAppButton({ number }) {
+  if (!number) return null;
+  const digits = number.replace(/\D/g, "");
+  if (!digits) return null;
+  const href = `https://wa.me/${digits}?text=${encodeURIComponent("Hi Pixel Crush! I'd like to ask about ")}`;
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      aria-label="Chat on WhatsApp"
+      className="fixed bottom-5 right-5 z-40 flex items-center justify-center pc-btn"
+      style={{
+        width: 56, height: 56, borderRadius: "50%",
+        background: GREEN, border: `2px solid ${BLACK}`,
+        boxShadow: `0 0 24px rgba(117,252,8,0.55)`,
+      }}
+    >
+      <MessageCircle size={26} color={BLACK} strokeWidth={2.3} />
+    </a>
   );
 }
 
@@ -1561,6 +1792,11 @@ function Confirmation({ order, bank, onNav }) {
       </div>
 
       <div className="mt-8 flex flex-wrap gap-3 justify-center">
+        {order.invoiceUrl && (
+          <a href={order.invoiceUrl} target="_blank" rel="noreferrer" download className="pc-btn flex items-center gap-2 px-5 py-3 text-sm font-bold" style={{ border: `2px solid ${GREEN}`, color: GREEN }}>
+            <Download size={16} /> Download Invoice
+          </a>
+        )}
         <GreenButton onClick={() => onNav("customer")}>View My Orders</GreenButton>
         <OutlineButton onClick={() => onNav("landing")}>Continue Browsing</OutlineButton>
       </div>
@@ -2447,7 +2683,14 @@ function OrdersAdmin({ orders, filters, setFilters, openOrder, setOpenOrderId, o
             <div className="pc-mono text-xs opacity-60">{o.id}</div>
             <h3 className="pc-display font-extrabold text-2xl">{o.product} × {o.qty}</h3>
           </div>
-          <div className="pc-display font-black text-2xl">{o.negotiable ? "TBC" : fmtLKR(o.total)}</div>
+          <div className="flex items-center gap-3">
+            {o.invoiceUrl && (
+              <a href={o.invoiceUrl} target="_blank" rel="noreferrer" className="pc-btn flex items-center gap-2 px-3 py-2 text-xs font-bold" style={{ border: `2px solid ${GREEN}`, color: GREEN }}>
+                <Download size={13} /> Invoice
+              </a>
+            )}
+            <div className="pc-display font-black text-2xl">{o.negotiable ? "TBC" : fmtLKR(o.total)}</div>
+          </div>
         </div>
 
         <div className="grid sm:grid-cols-2 gap-4 mb-6">
@@ -2760,6 +3003,12 @@ function BankAdmin({ bank, onSaveBank }) {
       <p className="text-xs opacity-50">These show in the site footer's Contact section. Leave a field blank to hide that line.</p>
 
       <div className="pt-2" style={{ borderTop: `1px solid rgba(255,255,255,0.15)` }}>
+        <FieldLabel required={false}>WhatsApp Business Number</FieldLabel>
+        <TextInput placeholder="+94 77 123 4567" value={form.whatsappNumber || ""} onChange={(e) => setForm((f) => ({ ...f, whatsappNumber: e.target.value }))} />
+        <p className="text-xs opacity-50 mt-1">Powers the floating "Chat on WhatsApp" button shown to customers on every page. Leave blank to hide it.</p>
+      </div>
+
+      <div className="pt-2" style={{ borderTop: `1px solid rgba(255,255,255,0.15)` }}>
         <FieldLabel required={false}>Instagram URL</FieldLabel>
         <TextInput placeholder="https://instagram.com/yourstudio" value={form.instagramUrl || ""} onChange={(e) => setForm((f) => ({ ...f, instagramUrl: e.target.value.trim() }))} />
       </div>
@@ -2988,7 +3237,21 @@ export default function App() {
       paymentProofType: contact.paymentProofType || null,
       orderStatus: "New",
       internalNotes: "",
+      invoiceUrl: null,
     };
+
+    // Best-effort invoice PDF — generated client-side and hosted on
+    // Cloudinary so it can be linked from both the confirmation screen
+    // and the order emails. The order still succeeds even if this fails.
+    try {
+      const product = products.find((p) => p.id === order.productId);
+      const pdfDoc = generateInvoicePdf(order, product, bank);
+      const blob = pdfDoc.output("blob");
+      order.invoiceUrl = await uploadPdfToCloudinary(blob, `${id}-invoice.pdf`);
+    } catch (e) {
+      console.error("Invoice generation/upload failed:", e);
+    }
+
     await saveDoc("orders", id, order);
 
     const notif = {
@@ -3000,10 +3263,12 @@ export default function App() {
     };
     await saveDoc("notifications", notif.id, notif);
 
-    // Best-effort real email alert to the studio inbox — order still
-    // succeeds even if EmailJS isn't configured or the send fails.
-    sendEmailViaEmailJS(EMAILJS_ORDER_TEMPLATE_ID, {
-      to_email: ADMIN_NOTIFY_EMAIL,
+    // Best-effort real email alerts — order still succeeds even if
+    // EmailJS isn't configured or a send fails. Same template is used
+    // for both copies (swap the "to" address); the invoice link is
+    // included in both so the customer gets their bill and you get a
+    // copy alongside the new-order alert.
+    const emailParams = {
       order_id: order.id,
       customer_name: order.customerName,
       customer_email: order.email,
@@ -3012,7 +3277,13 @@ export default function App() {
       product: order.product,
       quantity: order.qty,
       total: order.negotiable ? "To be confirmed" : fmtLKR(order.total),
-    }).catch(() => {});
+      payment_status: order.paymentStatus,
+      invoice_url: order.invoiceUrl || "",
+    };
+    sendEmailViaEmailJS(EMAILJS_ORDER_TEMPLATE_ID, { ...emailParams, to_email: ADMIN_NOTIFY_EMAIL }).catch(() => {});
+    if (order.email) {
+      sendEmailViaEmailJS(EMAILJS_ORDER_TEMPLATE_ID, { ...emailParams, to_email: order.email }).catch(() => {});
+    }
 
     setLastOrder(order);
     nav("confirmation");
@@ -3125,6 +3396,7 @@ export default function App() {
       </main>
 
       {page !== "admin" && <Footer onNav={nav} bank={bank} />}
+      {page !== "admin" && <WhatsAppButton number={bank.whatsappNumber} />}
     </div>
   );
 }
